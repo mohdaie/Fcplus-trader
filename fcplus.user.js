@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC+ Auto Trader Mobile
 // @namespace    https://fcplus.local/
-// @version      0.6.1
+// @version      0.6.2
 // @description  FC+ Silver Quickflip market scanner, auto trader, card pricing and diagnostics for the EA FC Web App.
 // @homepageURL  https://github.com/mohdaie/Fcplus-trader
 // @updateURL    https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var APP_ID = 'fcplus-auto-v061';
+  var APP_ID = 'fcplus-auto-v062';
   if (document.getElementById(APP_ID)) return;
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -63,6 +63,8 @@
     fastScanning: false,
     smartScanning: false,
     silverScanning: false,
+    quickFlipPreferredProfit: 500,
+    quickFlipPreferredMs: 45000,
     quickFlipRotateMs: 75000,
     quickFlip: {
       candidate: null,
@@ -251,6 +253,15 @@
     var maxBid = legalDown(net - state.minProfit);
     if (state.maxBidCap > 0) maxBid = Math.min(maxBid, state.maxBidCap);
     return Math.max(0, maxBid);
+  }
+
+  function quickFlipEntryFor(bin, profitTarget) {
+    if (!bin) return 0;
+    var net = Math.floor(bin * 0.95);
+    var target = Math.max(state.minProfit, Number(profitTarget) || state.minProfit);
+    var ceiling = legalDown(net - target);
+    if (state.maxBidCap > 0) ceiling = Math.min(ceiling, state.maxBidCap);
+    return Math.max(0, ceiling);
   }
 
   function scanMarket() {
@@ -1156,8 +1167,8 @@
         var minBin = bins[0] || 0;
         var minBid = rows.map(function (x) { return x.currentBid || x.startPrice; }).filter(Boolean)
           .sort(function (a, b) { return a - b; })[0] || 0;
-        var maxBid = maxBidFor(stable);
         var netSale = Math.floor(stable * 0.95);
+        var maxBid = quickFlipEntryFor(stable, state.quickFlipPreferredProfit);
         var immediate = rows.filter(function (x) {
           var entry = x.currentBid || x.startPrice;
           return (x.buyNow > 0 && x.buyNow <= maxBid) ||
@@ -2022,7 +2033,7 @@
     var cRelist = document.querySelector('#fcp-cond-relist');
     var cMode = document.querySelector('#fcp-cond-mode');
     var cTrades = document.querySelector('#fcp-cond-trades');
-    if (cMin) cMin.textContent = 'Profit ≥ ' + state.minProfit.toLocaleString();
+    if (cMin) cMin.textContent = 'Target +' + state.quickFlipPreferredProfit.toLocaleString() + ' · floor +' + state.minProfit.toLocaleString();
     if (cBid) cBid.textContent = state.autoBid ? 'Auto bid / rebid' : 'Bid off';
     if (cBuy) cBuy.textContent = state.autoBuyNow ? 'Auto Buy Now' : 'Buy Now off';
     if (cRelist) cRelist.textContent = state.autoSell ? 'Auto relist' : 'Relist off';
@@ -2129,7 +2140,12 @@
     var bins = rows.map(function (x) { return x.buyNow; }).filter(Boolean)
       .sort(function (a, b) { return a - b; });
     var stable = stableBIN(bins);
-    var maxEntry = maxBidFor(stable);
+    var candidateAge = Math.max(0, Date.now() - (state.quickFlip.scannedAt || Date.now()));
+    var preferredPhase = candidateAge < state.quickFlipPreferredMs;
+    var activeProfitTarget = preferredPhase
+      ? Math.max(state.minProfit, state.quickFlipPreferredProfit)
+      : state.minProfit;
+    var maxEntry = quickFlipEntryFor(stable, activeProfitTarget);
     var minBin = bins[0] || 0;
     var minBid = rows.map(function (x) { return x.currentBid || x.startPrice; }).filter(Boolean)
       .sort(function (a, b) { return a - b; })[0] || 0;
@@ -2187,7 +2203,7 @@
     } else {
       candidate.currentEntryProfit = minBin ? Math.floor(stable * 0.95) - minBin : 0;
       candidate.expectedProfit = Math.floor(stable * 0.95) - maxEntry;
-      state.quickFlip.status = 'Monitoring ' + candidate.name + ' · waiting for entry ≤ ' + maxEntry.toLocaleString();
+      state.quickFlip.status = 'Monitoring ' + candidate.name + ' · target +' + activeProfitTarget.toLocaleString() + ' · entry ≤ ' + maxEntry.toLocaleString();
     }
 
     renderMarket();
@@ -2215,6 +2231,7 @@
         log(
           'MONITOR · ' + candidate.name +
           ' · market ' + stable.toLocaleString() +
+          ' · target +' + activeProfitTarget.toLocaleString() +
           ' · max entry ' + maxEntry.toLocaleString() +
           ' · cheapest BIN ' + (minBin ? minBin.toLocaleString() : '—')
         );
@@ -2990,7 +3007,7 @@
     root.innerHTML =
       '<div class="fcp-native-head">' +
         '<button id="fcp-close" type="button">‹</button>' +
-        '<div><b>FC+ Trader</b><small>v0.6.1 · Silver Quickflip</small></div>' +
+        '<div><b>FC+ Trader</b><small>v0.6.2 · Silver Quickflip</small></div>' +
         '<span id="fcp-headstate">DRY</span>' +
       '</div>' +
       '<div id="fcp-body" class="fcp-native-body">' +
@@ -3011,7 +3028,7 @@
             '<div class="fcp-result-player"><small>PLAYER</small><b id="fcp-result-player">—</b></div>' +
             '<div><small>MARKET</small><b id="fcp-result-market">—</b></div>' +
             '<div><small>MAX BID</small><b id="fcp-result-maxbid">—</b></div>' +
-            '<div><small>PROFIT @ MAX ENTRY</small><b id="fcp-result-profit">—</b></div>' +
+            '<div><small>TARGET PROFIT</small><b id="fcp-result-profit">—</b></div>' +
           '</div>' +
           '<div id="fcp-result-meta" class="fcp-result-meta">No scan yet</div>' +
         '</section>' +
@@ -3020,7 +3037,7 @@
           '<h3>Condition</h3>' +
           '<div class="fcp-condition-chips">' +
             '<span>Silver only</span>' +
-            '<span id="fcp-cond-profit">Profit ≥ ' + state.minProfit + '</span>' +
+            '<span id="fcp-cond-profit">Target +' + state.quickFlipPreferredProfit + ' · floor +' + state.minProfit + '</span>' +
             '<span id="fcp-cond-bid">' + (state.autoBid ? 'Auto bid / rebid' : 'Bid off') + '</span>' +
             '<span id="fcp-cond-buy">' + (state.autoBuyNow ? 'Auto Buy Now' : 'Buy Now off') + '</span>' +
             '<span id="fcp-cond-relist">' + (state.autoSell ? 'Auto relist' : 'Relist off') + '</span>' +
