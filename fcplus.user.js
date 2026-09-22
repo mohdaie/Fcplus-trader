@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC+ Auto Trader Mobile
 // @namespace    https://fcplus.local/
-// @version      0.4.1
+// @version      0.4.2
 // @description  Mobile FC Web App market scanner, auto bid/rebid, auto relist, and hard trading limits.
 // @homepageURL  https://github.com/mohdaie/Fcplus-trader
 // @updateURL    https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var APP_ID = 'fcplus-auto-v041';
+  var APP_ID = 'fcplus-auto-v042';
   if (document.getElementById(APP_ID)) return;
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -43,7 +43,8 @@
     pollMs: 2500,
     undercutSteps: 1,
     maxScanPages: 40,
-    scanPageDelayMs: 1200
+    scanPageDelayMs: 1200,
+    showAltPositions: true
   };
 
   var stored = GM_getValue('fcplus_settings_v031', {}) || {};
@@ -98,7 +99,8 @@
       pollMs: state.pollMs,
       undercutSteps: state.undercutSteps,
       maxScanPages: state.maxScanPages,
-      scanPageDelayMs: state.scanPageDelayMs
+      scanPageDelayMs: state.scanPageDelayMs,
+      showAltPositions: state.showAltPositions
     });
   }
 
@@ -1288,6 +1290,7 @@
     state.autoBid = checked('#fcp-autobid');
     state.autoBuyNow = checked('#fcp-autobin');
     state.autoSell = checked('#fcp-autosell');
+    state.showAltPositions = checked('#fcp-altpositions');
     state.minProfit = Math.max(0, val('#fcp-minprofit'));
     state.maxBidCap = Math.max(0, val('#fcp-bidcap'));
     state.maxBinBuy = Math.max(0, val('#fcp-maxbin'));
@@ -1588,6 +1591,138 @@
     render();
   }
 
+  function positionLabel(value) {
+    var w = pageWindow();
+    if (value == null) return '';
+
+    if (typeof value === 'string') {
+      var s = value.trim();
+      if (/^[A-Za-z]{1,4}$/.test(s)) return s.toUpperCase();
+    }
+
+    try {
+      if (w.UTLocalizationUtil && typeof w.UTLocalizationUtil.positionIdToName === 'function' &&
+          w.services && w.services.Localization) {
+        var localized = w.UTLocalizationUtil.positionIdToName(value, w.services.Localization);
+        if (localized) return String(localized).toUpperCase();
+      }
+    } catch (e) {}
+
+    var fallback = String(value == null ? '' : value).trim();
+    return /^[A-Za-z]{1,4}$/.test(fallback) ? fallback.toUpperCase() : '';
+  }
+
+  function alternatePositionLabels(player) {
+    if (!player) return [];
+
+    var raw = [];
+    try {
+      if (Array.isArray(player.possiblePositions)) raw = player.possiblePositions.slice();
+      else if (Array.isArray(player.basePossiblePositions)) raw = player.basePossiblePositions.slice();
+    } catch (e) {}
+
+    var preferred = '';
+    try { preferred = positionLabel(player.preferredPosition); } catch (e) {}
+
+    var labels = [];
+    raw.forEach(function (value) {
+      var label = positionLabel(value);
+      if (!label || label === preferred || labels.indexOf(label) >= 0) return;
+      labels.push(label);
+    });
+
+    return labels.slice(0, 6);
+  }
+
+  function removeAltPositionStack(view) {
+    try {
+      if (view && view._fcplusAltPositions && view._fcplusAltPositions.parentNode) {
+        view._fcplusAltPositions.parentNode.removeChild(view._fcplusAltPositions);
+      }
+      if (view) view._fcplusAltPositions = null;
+    } catch (e) {}
+  }
+
+  function decoratePlayerCard(view, player) {
+    if (!view || !player) return;
+    removeAltPositionStack(view);
+    if (!state.showAltPositions) return;
+
+    var isPlayer = false;
+    try {
+      isPlayer = typeof player.isPlayer === 'function' ? player.isPlayer() : player.type === 'player';
+    } catch (e) {
+      isPlayer = player.type === 'player';
+    }
+    if (!isPlayer) return;
+
+    var positions = alternatePositionLabels(player);
+    if (!positions.length) return;
+
+    var root = view.__root || (typeof view.getRootElement === 'function' ? view.getRootElement() : null);
+    if (!root || !root.parentElement) return;
+
+    var host = root.parentElement;
+    try {
+      var computed = getComputedStyle(host);
+      if (computed.position === 'static') host.style.position = 'relative';
+      host.style.overflow = 'visible';
+    } catch (e) {}
+
+    var stack = document.createElement('div');
+    stack.className = 'fcplus-alt-pos-stack';
+    stack.setAttribute('data-fcplus-defid', String(Number(player.definitionId) || 0));
+
+    positions.forEach(function (pos) {
+      var chip = document.createElement('span');
+      chip.textContent = pos;
+      stack.appendChild(chip);
+    });
+
+    host.appendChild(stack);
+    view._fcplusAltPositions = stack;
+  }
+
+  function installPlayerCardEnhancer() {
+    var w = pageWindow();
+    var Ctor;
+    try { Ctor = w.UTPlayerItemView; } catch (e) { Ctor = null; }
+    if (!Ctor || !Ctor.prototype || typeof Ctor.prototype.renderItem !== 'function') return false;
+
+    var current = Ctor.prototype.renderItem;
+    if (current.__fcplusAltPositions042) return true;
+
+    var wrapped = function (player, template) {
+      var result = current.apply(this, arguments);
+      var view = this;
+      setTimeout(function () {
+        try { decoratePlayerCard(view, player); } catch (e) {}
+      }, 0);
+      return result;
+    };
+
+    try {
+      Object.defineProperty(wrapped, '__fcplusAltPositions042', { value: true });
+    } catch (e) {
+      wrapped.__fcplusAltPositions042 = true;
+    }
+
+    Ctor.prototype.renderItem = wrapped;
+    return true;
+  }
+
+  function refreshVisibleAltPositions() {
+    var w = pageWindow();
+    var Ctor;
+    try { Ctor = w.UTPlayerItemView; } catch (e) { Ctor = null; }
+    if (!Ctor) return;
+
+    // Existing cards will naturally refresh on EA renders. Toggling off removes all visible FC+ chips immediately.
+    if (!state.showAltPositions) {
+      Array.from(document.querySelectorAll('.fcplus-alt-pos-stack')).forEach(function (el) { el.remove(); });
+    }
+  }
+
   function openNativePanel() {
     var root = document.getElementById(APP_ID);
     if (!root) return;
@@ -1758,6 +1893,7 @@
   function nativeUiHeartbeat() {
     installNativeNav();
     installPlayerAction();
+    installPlayerCardEnhancer();
   }
 
   function createUI() {
@@ -1766,7 +1902,7 @@
     root.innerHTML =
       '<div class="fcp-native-head">' +
         '<button id="fcp-close" type="button">‹</button>' +
-        '<div><b>FC+ Trader</b><small>v0.4.1 · native UI fix</small></div>' +
+        '<div><b>FC+ Trader</b><small>v0.4.2 · card positions</small></div>' +
         '<span id="fcp-headstate">DRY</span>' +
       '</div>' +
       '<div id="fcp-body" class="fcp-native-body">' +
@@ -1803,6 +1939,13 @@
             '<label><span>Auto Buy Now</span><input id="fcp-autobin" type="checkbox"' + (state.autoBuyNow ? ' checked' : '') + '></label>' +
             '<label><span>Auto relist</span><input id="fcp-autosell" type="checkbox"' + (state.autoSell ? ' checked' : '') + '></label>' +
             '<label><span>Dry run</span><input id="fcp-dry" type="checkbox"' + (state.dryRun ? ' checked' : '') + '></label>' +
+          '</div>' +
+        '</section>' +
+
+        '<section class="fcp-section">' +
+          '<h3>Player Cards</h3>' +
+          '<div class="fcp-switches fcp-display-switches">' +
+            '<label><span><b>Alternate positions</b><small>Show every available position directly on player cards.</small></span><input id="fcp-altpositions" type="checkbox"' + (state.showAltPositions ? ' checked' : '') + '></label>' +
           '</div>' +
         '</section>' +
 
@@ -1851,6 +1994,7 @@
     Array.from(root.querySelectorAll('input')).forEach(function (input) {
       input.addEventListener('change', function () {
         if (!state.running) readUI();
+        if (input.id === 'fcp-altpositions') refreshVisibleAltPositions();
         var hs = root.querySelector('#fcp-headstate');
         if (hs) hs.textContent = root.querySelector('#fcp-dry').checked ? 'DRY' : 'LIVE';
       });
@@ -1860,6 +2004,7 @@
     log('Ready · FC+ is integrated into the EA UI');
 
     installNativeInteractionBridge();
+    installPlayerCardEnhancer();
     nativeUiHeartbeat();
     setInterval(nativeUiHeartbeat, 900);
   }
@@ -1914,7 +2059,14 @@
     '.fcp-native-action{position:relative!important;z-index:20!important;pointer-events:auto!important;touch-action:manipulation!important;width:100%;min-height:62px;padding:10px 42px 10px 18px;border:0;border-top:1px solid #ffffff16;border-bottom:1px solid #ffffff16;background:transparent;color:#fff;text-align:left;font-family:system-ui,-apple-system,Segoe UI,sans-serif}' +
     '.fcp-native-action span{display:block!important;font-size:18px!important;line-height:1.25!important}' +
     '.fcp-native-action small{display:block!important;margin-top:4px!important;font-size:11px!important;line-height:1.25!important;color:#ffffff70!important}' +
-    '.fcp-native-action b{position:absolute;right:18px;top:50%;transform:translateY(-50%);font-size:30px;font-weight:300}'
+    '.fcp-native-action b{position:absolute;right:18px;top:50%;transform:translateY(-50%);font-size:30px;font-weight:300}' +
+    '#' + APP_ID + ' .fcp-display-switches label>span{display:flex;flex-direction:column;gap:3px}' +
+    '#' + APP_ID + ' .fcp-display-switches label>span>b{font-size:14px;font-weight:600}' +
+    '#' + APP_ID + ' .fcp-display-switches label>span>small{font-size:10px;line-height:1.3;color:#ffffff6f;max-width:230px}' +
+    '.fcplus-alt-pos-stack{position:absolute!important;right:-2px!important;top:12%!important;z-index:40!important;display:flex!important;flex-direction:column!important;gap:2px!important;pointer-events:none!important;filter:drop-shadow(0 1px 2px #0008)!important}' +
+    '.fcplus-alt-pos-stack span{display:flex!important;align-items:center!important;justify-content:center!important;min-width:25px!important;height:15px!important;padding:0 3px!important;border-radius:3px!important;background:rgba(239,235,214,.94)!important;color:#111!important;border:1px solid rgba(0,0,0,.22)!important;font:800 8px/1 system-ui,-apple-system,Segoe UI,sans-serif!important;letter-spacing:-.15px!important}' +
+    '.phone .fcplus-alt-pos-stack{right:-1px!important;top:10%!important;gap:1px!important}' +
+    '.phone .fcplus-alt-pos-stack span{min-width:22px!important;height:13px!important;padding:0 2px!important;font-size:7px!important}'
   );
 
   function boot() {
