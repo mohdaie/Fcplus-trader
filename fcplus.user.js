@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC+ Auto Trader Mobile
 // @namespace    https://fcplus.local/
-// @version      0.3.4
+// @version      0.3.5
 // @description  Mobile FC Web App market scanner, auto bid/rebid, auto relist, and hard trading limits.
 // @homepageURL  https://github.com/mohdaie/Fcplus-trader
 // @updateURL    https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var APP_ID = 'fcplus-auto-v034';
+  var APP_ID = 'fcplus-auto-v035';
   if (document.getElementById(APP_ID)) return;
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -321,6 +321,24 @@
 
   function getActiveSearchCriteria() {
     var w = pageWindow();
+
+    // Fast path used by the EA Web App market controllers.
+    try {
+      var direct = w.getAppMain()
+        .getRootViewController()
+        .getPresentedViewController()
+        .getCurrentViewController()
+        .getCurrentController();
+      if (direct) {
+        if (direct.viewmodel && direct.viewmodel.searchCriteria) return direct.viewmodel.searchCriteria;
+        if (direct._viewmodel && direct._viewmodel.searchCriteria) return direct._viewmodel.searchCriteria;
+        if (direct.leftController) {
+          if (direct.leftController.viewmodel && direct.leftController.viewmodel.searchCriteria) return direct.leftController.viewmodel.searchCriteria;
+          if (direct.leftController._viewmodel && direct.leftController._viewmodel.searchCriteria) return direct.leftController._viewmodel.searchCriteria;
+        }
+      }
+    } catch (e) {}
+
     var app;
     try { app = w.getAppMain && w.getAppMain(); } catch (e) { app = null; }
     if (!app) return null;
@@ -340,6 +358,9 @@
 
       try {
         if (node.viewmodel && node.viewmodel.searchCriteria) return node.viewmodel.searchCriteria;
+      } catch (e) {}
+      try {
+        if (node._viewmodel && node._viewmodel.searchCriteria) return node._viewmodel.searchCriteria;
       } catch (e) {}
 
       for (var m = 0; m < methodNames.length; m++) {
@@ -697,12 +718,35 @@
         ' · ' + state.market.priceSource
       );
     } catch (e) {
-      log('Smart Price fallback → EA UI probe (' + (e && e.message ? e.message : String(e)) + ')');
-      state.smartScanning = false;
-      [smartBtn, fastBtn, fullBtn].forEach(function (b) { if (b) b.disabled = false; });
-      if (smartBtn) smartBtn.textContent = 'SMART PRICE';
-      await fastMinBinScan();
-      return;
+      // Never use browser history as a fallback: that can exit the FC Web App.
+      var visibleRows = listingCards();
+      var binsFallback = visibleRows.map(function (x) { return x.buyNow; }).filter(Boolean)
+        .sort(function (a, b) { return a - b; });
+      var bidsFallback = visibleRows.map(function (x) { return x.currentBid || x.startPrice; }).filter(Boolean)
+        .sort(function (a, b) { return a - b; });
+
+      state.market = {
+        absMinBIN: binsFallback[0] || 0,
+        stableBIN: stableBIN(binsFallback),
+        minBid: bidsFallback[0] || 0,
+        listings: visibleRows.length,
+        pages: 1,
+        probes: 0,
+        scannedAt: Date.now(),
+        fullScan: false,
+        fastScan: false,
+        smartScan: true,
+        definitionId: 0,
+        futggPrice: 0,
+        futggSalesMedian: 0,
+        futggStatus: 'fallback · unavailable',
+        priceSource: 'PAGE FALLBACK',
+        confidence: 'LOW'
+      };
+
+      renderMarket();
+      log('Smart Price unavailable · stayed on Search Results (' +
+        (e && e.message ? e.message : String(e)) + ')');
     } finally {
       state.smartScanning = false;
       [smartBtn, fastBtn, fullBtn].forEach(function (b) { if (b) b.disabled = false; });
@@ -753,11 +797,9 @@
   }
 
   async function goBackToSearchForm() {
-    if (pageType() !== 'results' && findMaxBuyNowInput()) return true;
-    history.back();
-    return await waitUntil(function () {
-      return !!findMaxBuyNowInput() && !!findControl([/^Search$/i]);
-    }, 7000);
+    // Deprecated in v0.3.5. Browser history navigation could leave the EA Web App.
+    // Kept only for compatibility with old helper code; never changes route.
+    return pageType() !== 'results' && !!findMaxBuyNowInput();
   }
 
   async function submitPriceProbe(maxPrice) {
@@ -792,149 +834,97 @@
 
   async function fastMinBinScan() {
     if (state.running) {
-      log('Stop AUTO before Fast BIN scan');
+      log('Stop AUTO before EA Fast BIN scan');
       return;
     }
-    if (state.fastScanning || state.scanningAll) return;
+    if (state.fastScanning || state.smartScanning || state.scanningAll) return;
     if (pageType() !== 'results') {
       log('Open Search Results first');
       return;
     }
 
-    var firstPage = listingCards();
-    if (!firstPage.length) {
-      log('No listings on current results page');
-      return;
-    }
-
-    var visibleBins = firstPage.map(function (x) { return x.buyNow; })
-      .filter(Boolean)
-      .sort(function (a, b) { return a - b; });
-
-    var high = visibleBins[0];
-    var initialStable = stableBIN(visibleBins);
-    var initialMinBid = firstPage.map(function (x) { return x.currentBid || x.startPrice; })
-      .filter(Boolean)
-      .sort(function (a, b) { return a - b; })[0] || 0;
-
-    if (!high) {
-      log('Could not establish starting BIN');
+    var visibleRows = listingCards();
+    if (!visibleRows.length) {
+      log('No visible listings detected');
       return;
     }
 
     state.fastScanning = true;
     var fastBtn = document.querySelector('#fcp-fastbin');
-    var allBtn = document.querySelector('#fcp-scanall');
-    if (fastBtn) {
-      fastBtn.disabled = true;
-      fastBtn.textContent = 'PROBING…';
-    }
-    if (allBtn) allBtn.disabled = true;
-
-    var originalMax = '';
-    var probes = 0;
-    var low = 150;
-    var bestFound = high;
+    var smartBtn = document.querySelector('#fcp-smartprice');
+    var fullBtn = document.querySelector('#fcp-scanall');
+    [fastBtn, smartBtn, fullBtn].forEach(function (b) { if (b) b.disabled = true; });
+    if (fastBtn) fastBtn.textContent = 'EA SCANNING…';
 
     try {
-      log('Fast BIN: starting below ' + high.toLocaleString());
+      log('EA Fast BIN: direct market query · screen stays here');
 
-      var formReady = await goBackToSearchForm();
-      if (!formReady) throw new Error('Max Buy Now search field not found');
+      var rows = await eaDirectSearch(0);
+      if (!rows.length) throw new Error('EA direct search returned no listings');
 
-      var originalInput = findMaxBuyNowInput();
-      originalMax = originalInput ? originalInput.value : '';
+      var bins = rows.map(function (x) { return x.buyNow; }).filter(Boolean)
+        .sort(function (a, b) { return a - b; });
+      var bids = rows.map(function (x) { return x.currentBid || x.startPrice; }).filter(Boolean)
+        .sort(function (a, b) { return a - b; });
 
-      while (low < high && probes < 14) {
-        var midpoint = Math.floor((low + high) / 2);
-        var mid = legalDown(midpoint);
-        if (mid < low) mid = low;
-        if (mid >= high) mid = legalDown(high - priceStep(high));
-        if (mid < low) break;
+      var direct = await eaDirectMinBin(rows);
+      var reference = stableBIN(bins) || direct.minBin || 0;
 
-        probes++;
-        log('Probe ' + probes + ': ≤ ' + mid.toLocaleString());
+      state.market = {
+        absMinBIN: direct.minBin || bins[0] || 0,
+        stableBIN: reference,
+        minBid: bids[0] || 0,
+        listings: rows.length,
+        pages: 0,
+        probes: direct.probes || 0,
+        scannedAt: Date.now(),
+        fullScan: false,
+        fastScan: true,
+        smartScan: false,
+        definitionId: rows.map(function (x) { return x.definitionId; }).filter(Boolean)[0] || 0,
+        futggPrice: 0,
+        futggSalesMedian: 0,
+        futggStatus: 'not checked',
+        priceSource: 'EA DIRECT',
+        confidence: 'HIGH'
+      };
 
-        var result = await submitPriceProbe(mid);
-        if (!result.ok) throw new Error('Search did not load');
-
-        if (result.hasResults) {
-          var foundBins = result.listings.map(function (x) { return x.buyNow; })
-            .filter(Boolean)
-            .sort(function (a, b) { return a - b; });
-          var foundMin = foundBins[0] || mid;
-          bestFound = Math.min(bestFound, foundMin);
-          high = Math.min(mid, foundMin);
-
-          state.market.absMinBIN = bestFound;
-          state.market.stableBIN = initialStable;
-          state.market.minBid = initialMinBid;
-          state.market.listings = result.listings.length;
-          state.market.pages = 0;
-          state.market.probes = probes;
-          state.market.scannedAt = Date.now();
-          state.market.fullScan = false;
-          state.market.fastScan = true;
-          state.market.smartScan = false;
-          state.market.priceSource = 'EA UI PROBE';
-          state.market.confidence = 'MEDIUM';
-          renderMarket();
-
-          if (low >= high) break;
-          if (!(await goBackToSearchForm())) throw new Error('Could not return to search form');
-        } else {
-          low = nextLegalAbove(mid);
-          if (low > high) low = high;
-          if (!(await goBackToSearchForm())) throw new Error('Could not return to search form');
-        }
-      }
-
-      // Validate at the best boundary and capture the actual cheapest returned listing.
-      var finalPrice = Math.max(low, Math.min(high, bestFound));
-      var finalResult = await submitPriceProbe(finalPrice);
-
-      if (finalResult.ok && finalResult.hasResults) {
-        var finalBins = finalResult.listings.map(function (x) { return x.buyNow; })
-          .filter(Boolean)
-          .sort(function (a, b) { return a - b; });
-        if (finalBins.length) bestFound = Math.min(bestFound, finalBins[0]);
-      }
-
-      state.market.absMinBIN = bestFound;
-      state.market.stableBIN = initialStable;
-      state.market.minBid = initialMinBid;
-      state.market.listings = firstPage.length;
-      state.market.pages = 0;
-      state.market.probes = probes + 1;
-      state.market.scannedAt = Date.now();
-      state.market.fullScan = false;
-      state.market.fastScan = true;
-          state.market.smartScan = false;
-          state.market.priceSource = 'EA UI PROBE';
-          state.market.confidence = 'MEDIUM';
       renderMarket();
-
-      log('FAST MIN BIN ' + bestFound.toLocaleString() + ' · ' + state.market.probes + ' probes');
-
-      // Restore the user's original Max Buy Now filter and original results.
-      if (await goBackToSearchForm()) {
-        var restoreInput = findMaxBuyNowInput();
-        var restoreSearch = findControl([/^Search$/i]);
-        if (restoreInput && restoreSearch) {
-          setInput(restoreInput, originalMax);
-          clickLikeUser(restoreSearch);
-          await waitUntil(function () { return pageType() === 'results' || noResultsVisible(); }, 7000);
-        }
-      }
+      log('EA FAST BIN ' + state.market.absMinBIN.toLocaleString() +
+        ' · ' + state.market.probes + ' direct probes · no navigation');
     } catch (e) {
-      log('Fast BIN error: ' + (e && e.message ? e.message : String(e)));
+      // Never navigate away from the market page as a fallback.
+      var binsFallback = visibleRows.map(function (x) { return x.buyNow; }).filter(Boolean)
+        .sort(function (a, b) { return a - b; });
+      var bidsFallback = visibleRows.map(function (x) { return x.currentBid || x.startPrice; }).filter(Boolean)
+        .sort(function (a, b) { return a - b; });
+
+      state.market = {
+        absMinBIN: binsFallback[0] || 0,
+        stableBIN: stableBIN(binsFallback),
+        minBid: bidsFallback[0] || 0,
+        listings: visibleRows.length,
+        pages: 1,
+        probes: 0,
+        scannedAt: Date.now(),
+        fullScan: false,
+        fastScan: false,
+        smartScan: false,
+        definitionId: 0,
+        futggPrice: 0,
+        futggSalesMedian: 0,
+        futggStatus: 'not checked',
+        priceSource: 'PAGE FALLBACK',
+        confidence: 'LOW'
+      };
+
+      renderMarket();
+      log('EA direct scan unavailable · stayed on page · using visible listings (' +
+        (e && e.message ? e.message : String(e)) + ')');
     } finally {
       state.fastScanning = false;
-      if (fastBtn) {
-        fastBtn.disabled = false;
-        fastBtn.textContent = 'FAST MIN BIN';
-      }
-      if (allBtn) allBtn.disabled = false;
+      [fastBtn, smartBtn, fullBtn].forEach(function (b) { if (b) b.disabled = false; });
+      if (fastBtn) fastBtn.textContent = 'EA FAST BIN';
       render();
     }
   }
@@ -1141,7 +1131,7 @@
       scanInfo.textContent = state.market.smartScan
         ? ('Smart · ' + state.market.probes + ' EA probes · FUT.GG ' + (state.market.futggStatus || 'not checked'))
         : state.market.fastScan
-          ? ('EA UI probe · ' + state.market.probes + ' price probes')
+          ? ('EA direct · ' + state.market.probes + ' price probes')
           : state.market.fullScan
             ? ('Full market · ' + state.market.pages + ' pages · ' + state.market.listings + ' listings')
             : (state.market.listings ? ('Current page · ' + state.market.listings + ' listings') : 'Not scanned');
@@ -1481,7 +1471,7 @@
     var root = document.createElement('section');
     root.id = APP_ID;
     root.innerHTML =
-      '<div class="fcp-head"><div><b>FC+ AUTO</b><small>v0.3.4 · smart price engine</small></div><button id="fcp-min" type="button">−</button></div>' +
+      '<div class="fcp-head"><div><b>FC+ AUTO</b><small>v0.3.5 · non-navigation scan</small></div><button id="fcp-min" type="button">−</button></div>' +
       '<div id="fcp-body">' +
         '<div class="fcp-top"><span id="fcp-state" data-on="0">STOPPED</span><span>Trades <b id="fcp-trades">0/' + state.maxTrades + '</b></span></div>' +
         '<div class="fcp-market">' +
@@ -1503,7 +1493,7 @@
         '</div>' +
         '<div class="fcp-scanrow">' +
           '<label>FULL SCAN PAGE CAP<input id="fcp-maxscanpages" type="number" inputmode="numeric" min="1" max="100" value="' + state.maxScanPages + '"></label>' +
-          '<span>Smart Price: FUT.GG reference + direct EA validation. Falls back automatically.</span>' +
+          '<span>Smart Price: FUT.GG reference + in-place EA validation. No page navigation.</span>' +
         '</div>' +
         '<div class="fcp-grid three">' +
           '<label>MIN PROFIT<input id="fcp-minprofit" type="number" inputmode="numeric" value="' + state.minProfit + '"></label>' +
