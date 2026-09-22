@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         FC+ Auto Trader Mobile
 // @namespace    https://fcplus.local/
-// @version      0.4.3
-// @description  Mobile FC Web App market scanner, auto bid/rebid, auto relist, and hard trading limits.
+// @version      0.5.0
+// @description  FC+ Silver Quickflip market scanner, auto trader, card pricing and diagnostics for the EA FC Web App.
 // @homepageURL  https://github.com/mohdaie/Fcplus-trader
 // @updateURL    https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
 // @downloadURL  https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var APP_ID = 'fcplus-auto-v043';
+  var APP_ID = 'fcplus-auto-v050';
   if (document.getElementById(APP_ID)) return;
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -62,6 +62,16 @@
     scanningAll: false,
     fastScanning: false,
     smartScanning: false,
+    silverScanning: false,
+    quickFlip: {
+      candidate: null,
+      scannedAt: 0,
+      scannedListings: 0,
+      uniquePlayers: 0,
+      checkedPlayers: 0,
+      status: 'Ready to scan silver players'
+    },
+    logHistory: [],
     market: {
       absMinBIN: 0,
       stableBIN: 0,
