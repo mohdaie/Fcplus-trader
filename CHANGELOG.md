@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.3
+
+- Added a compact **market price / Min BIN badge below every player card**, enabled by default.
+- Card prices are cached for five minutes and loaded through the existing FUT.GG price source, with EA market-average fallback when needed.
+- Reworked alternate-position badges to a **FUTBIN-style attached tab stack** on the card's right edge instead of floating rounded boxes.
+- Added separate toggles for **Alternate positions** and **Min BIN price** under Player Cards.
+- Card-price requests are queued with limited concurrency to avoid loading every visible card at once.
+
 ## 0.4.2
 
 - Added FUTBIN-style **alternate-position badges directly on player cards**.
