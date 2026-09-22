@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC+ Auto Trader Mobile
 // @namespace    https://fcplus.local/
-// @version      0.5.1
+// @version      0.5.2
 // @description  FC+ Silver Quickflip market scanner, auto trader, card pricing and diagnostics for the EA FC Web App.
 // @homepageURL  https://github.com/mohdaie/Fcplus-trader
 // @updateURL    https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var APP_ID = 'fcplus-auto-v051';
+  var APP_ID = 'fcplus-auto-v052';
   if (document.getElementById(APP_ID)) return;
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -72,6 +72,8 @@
       status: 'Ready to scan silver players'
     },
     logHistory: [],
+    lastQuickFlipDecision: '',
+    lastQuickFlipDecisionAt: 0,
     market: {
       absMinBIN: 0,
       stableBIN: 0,
@@ -1736,6 +1738,128 @@
     return false;
   }
 
+
+  async function monitorQuickFlipCandidate() {
+    var candidate = state.quickFlip && state.quickFlip.candidate;
+    if (!candidate || !candidate.definitionId) {
+      log('AUTO · no Silver Quickflip candidate selected');
+      return;
+    }
+
+    var rows = await eaDirectSearch(0, candidate.definitionId);
+    if (!rows.length) {
+      state.quickFlip.status = 'Monitoring ' + candidate.name + ' · no listings returned';
+      renderQuickFlip();
+      return;
+    }
+
+    var bins = rows.map(function (x) { return x.buyNow; }).filter(Boolean)
+      .sort(function (a, b) { return a - b; });
+    var stable = stableBIN(bins);
+    var maxEntry = maxBidFor(stable);
+    var minBin = bins[0] || 0;
+    var minBid = rows.map(function (x) { return x.currentBid || x.startPrice; }).filter(Boolean)
+      .sort(function (a, b) { return a - b; })[0] || 0;
+
+    candidate.minBin = minBin;
+    candidate.stableBIN = stable;
+    candidate.minBid = minBid;
+    candidate.maxBid = maxEntry;
+    candidate.sample = rows.length;
+    candidate.netSale = Math.floor(stable * 0.95);
+
+    state.market.absMinBIN = minBin;
+    state.market.stableBIN = stable;
+    state.market.minBid = minBid;
+    state.market.listings = rows.length;
+    state.market.scannedAt = Date.now();
+    state.market.definitionId = candidate.definitionId;
+    state.market.priceSource = 'EA QUICKFLIP LIVE';
+    state.market.confidence = rows.length >= 8 ? 'HIGH' : 'MEDIUM';
+
+    var buy = rows.filter(function (row) {
+      return row.buyNow > 0 && row.buyNow <= maxEntry;
+    }).sort(function (a, b) {
+      return a.buyNow - b.buyNow || a.timeSeconds - b.timeSeconds;
+    })[0] || null;
+
+    var bid = rows.map(function (row) {
+      row.effectiveBid = row.currentBid || row.startPrice;
+      return row;
+    }).filter(function (row) {
+      return row.effectiveBid > 0 && row.effectiveBid <= maxEntry && row.timeSeconds <= 120;
+    }).sort(function (a, b) {
+      return a.timeSeconds - b.timeSeconds || a.effectiveBid - b.effectiveBid;
+    })[0] || null;
+
+    var decision = null;
+    if (state.autoBuyNow && buy) {
+      decision = {
+        type: 'BIN',
+        price: buy.buyNow,
+        row: buy
+      };
+    } else if (state.autoBid && bid) {
+      decision = {
+        type: 'BID',
+        price: bid.effectiveBid,
+        row: bid
+      };
+    }
+
+    if (decision) {
+      candidate.expectedProfit = Math.floor(stable * 0.95) - decision.price;
+      state.quickFlip.status = 'Monitoring ' + candidate.name + ' · entry found';
+    } else {
+      candidate.expectedProfit = minBin ? Math.floor(stable * 0.95) - minBin : 0;
+      state.quickFlip.status = 'Monitoring ' + candidate.name + ' · waiting for entry ≤ ' + maxEntry.toLocaleString();
+    }
+
+    renderMarket();
+    renderQuickFlip();
+
+    var signature = decision
+      ? (decision.type + ':' + decision.price + ':' + String(decision.row.auctionId || decision.row.itemId || '') + ':' + decision.row.timeSeconds)
+      : ('WAIT:' + minBin + ':' + minBid + ':' + maxEntry);
+
+    var now = Date.now();
+    if (signature !== state.lastQuickFlipDecision || now - state.lastQuickFlipDecisionAt > 15000) {
+      state.lastQuickFlipDecision = signature;
+      state.lastQuickFlipDecisionAt = now;
+
+      if (decision) {
+        var estimated = Math.floor(stable * 0.95) - decision.price;
+        log(
+          (state.dryRun ? 'DRY · would ' : 'READY · ') + decision.type +
+          ' ' + candidate.name +
+          ' @ ' + decision.price.toLocaleString() +
+          ' · market ' + stable.toLocaleString() +
+          ' · est ' + (estimated >= 0 ? '+' : '') + estimated.toLocaleString()
+        );
+      } else {
+        log(
+          'MONITOR · ' + candidate.name +
+          ' · market ' + stable.toLocaleString() +
+          ' · max entry ' + maxEntry.toLocaleString() +
+          ' · cheapest BIN ' + (minBin ? minBin.toLocaleString() : '—')
+        );
+      }
+    }
+
+    state.currentTarget = {
+      strategy: 'silver_quick_flip',
+      definitionId: candidate.definitionId,
+      name: candidate.name,
+      rating: candidate.rating,
+      stableBIN: stable,
+      maxBid: maxEntry,
+      decision: decision ? decision.type.toLowerCase() : 'wait',
+      price: decision ? decision.price : 0,
+      auctionId: decision && decision.row ? decision.row.auctionId : ''
+    };
+  }
+
+
   async function handleResults() {
     var listings = scanMarket();
     if (!listings.length) {
@@ -1967,12 +2091,17 @@
     render();
 
     try {
-      var p = pageType();
-      if (p === 'results') await handleResults();
-      else if (p === 'details') await handleDetails();
-      else if (p === 'won') await handleWon();
-      else if (p === 'sell') await handleSell();
-      else log('Open Transfer Market search/results');
+      var candidate = state.quickFlip && state.quickFlip.candidate;
+      if (state.dryRun && candidate && candidate.definitionId) {
+        await monitorQuickFlipCandidate();
+      } else {
+        var p = pageType();
+        if (p === 'results') await handleResults();
+        else if (p === 'details') await handleDetails();
+        else if (p === 'won') await handleWon();
+        else if (p === 'sell') await handleSell();
+        else log('Open Transfer Market search/results');
+      }
     } catch (e) {
       log('Error: ' + (e && e.message ? e.message : String(e)));
     } finally {
@@ -1988,12 +2117,36 @@
 
   function start() {
     readUI();
+
+    var candidate = state.quickFlip && state.quickFlip.candidate;
+    if (!candidate || !candidate.definitionId) {
+      log('AUTO · Scan Player first');
+      return;
+    }
+
     state.running = true;
     state.busy = false;
     state.trades = 0;
     state.sessionStarted = Date.now();
     state.lastBidPlaced = 0;
-    log(state.dryRun ? 'AUTO started · DRY RUN' : 'AUTO started · LIVE');
+    state.lastQuickFlipDecision = '';
+    state.lastQuickFlipDecisionAt = 0;
+    state.currentTarget = {
+      strategy: 'silver_quick_flip',
+      definitionId: candidate.definitionId,
+      name: candidate.name,
+      rating: candidate.rating,
+      stableBIN: candidate.stableBIN,
+      maxBid: candidate.maxBid
+    };
+
+    state.quickFlip.status = 'Locked to ' + candidate.name + ' · monitoring exact EA player market';
+    log(
+      'LOCKED · ' + candidate.name + ' ' + candidate.rating +
+      ' · EA ID ' + candidate.definitionId +
+      ' · max entry ' + (candidate.maxBid || 0).toLocaleString()
+    );
+    log(state.dryRun ? 'AUTO started · DRY RUN · exact candidate monitor' : 'AUTO started · LIVE');
     render();
     cycle();
   }
@@ -2451,7 +2604,7 @@
     root.innerHTML =
       '<div class="fcp-native-head">' +
         '<button id="fcp-close" type="button">‹</button>' +
-        '<div><b>FC+ Trader</b><small>v0.5.0 · Silver Quickflip</small></div>' +
+        '<div><b>FC+ Trader</b><small>v0.5.2 · Silver Quickflip</small></div>' +
         '<span id="fcp-headstate">DRY</span>' +
       '</div>' +
       '<div id="fcp-body" class="fcp-native-body">' +
