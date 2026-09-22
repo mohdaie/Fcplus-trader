@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC+ Auto Trader Mobile
 // @namespace    https://fcplus.local/
-// @version      0.8.3
+// @version      0.8.4
 // @description  FC+ Quick Flip market scanner, SBC candidate bridge, auto trader, card pricing and diagnostics for the EA FC Web App.
 // @homepageURL  https://github.com/mohdaie/Fcplus-trader
 // @updateURL    https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var APP_ID = 'fcplus-auto-v083';
+  var APP_ID = 'fcplus-auto-v084';
   if (document.getElementById(APP_ID)) return;
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -3654,9 +3654,13 @@
       if (view && view._fcplusCardPrice && view._fcplusCardPrice.parentNode) {
         view._fcplusCardPrice.parentNode.removeChild(view._fcplusCardPrice);
       }
+      if (view && view._fcplusCardName && view._fcplusCardName.parentNode) {
+        view._fcplusCardName.parentNode.removeChild(view._fcplusCardName);
+      }
       if (view) {
         view._fcplusAltPositions = null;
         view._fcplusCardPrice = null;
+        view._fcplusCardName = null;
       }
     } catch (e) {}
   }
@@ -3792,6 +3796,21 @@
         view._fcplusAltPositions = stack;
       }
     }
+
+    var cardName = document.createElement('div');
+    cardName.className = 'fcplus-card-name';
+    var playerName = '';
+    try {
+      playerName = text(
+        (player._staticData && (player._staticData.name || player._staticData.commonName || player._staticData.lastName)) ||
+        player.name ||
+        ''
+      );
+    } catch (e) {}
+    cardName.textContent = playerName || 'Player';
+    cardName.title = playerName || 'Player';
+    host.appendChild(cardName);
+    view._fcplusCardName = cardName;
 
     if (state.showCardPrices) {
       var badge = document.createElement('div');
@@ -4033,7 +4052,7 @@
     root.innerHTML =
       '<div class="fcp-native-head">' +
         '<button id="fcp-close" type="button">‹</button>' +
-        '<div><b>FC+ Trader</b><small>v0.8.3 · FC+ Quick Flip</small></div>' +
+        '<div><b>FC+ Trader</b><small>v0.8.4 · FC+ Quick Flip</small></div>' +
         '<span id="fcp-headstate">DRY</span>' +
       '</div>' +
       '<div id="fcp-body" class="fcp-native-body">' +
@@ -4339,13 +4358,15 @@
     '.phone .fcplus-alt-pos-stack{right:-4px!important;top:6px!important}' +
     '.phone .fcplus-alt-pos-stack span{min-width:23px!important;height:15px!important;padding:0 3px!important;font-size:7px!important}' +
 
-    '.fcplus-card-price{position:absolute!important;left:50%!important;bottom:-18px!important;transform:translateX(-50%)!important;z-index:46!important;min-width:74px!important;height:20px!important;padding:0 6px!important;border-radius:6px!important;display:flex!important;align-items:center!important;justify-content:center!important;gap:3px!important;background:rgba(13,22,31,.94)!important;border:1px solid rgba(242,213,76,.70)!important;color:#fff!important;box-shadow:0 2px 5px rgba(0,0,0,.45)!important;white-space:nowrap!important;pointer-events:none!important;font:800 9px/1 system-ui,-apple-system,Segoe UI,sans-serif!important}' +
-    '.fcplus-card-price small{font:800 6px/1 system-ui,-apple-system,Segoe UI,sans-serif!important;letter-spacing:.04em!important;color:rgba(255,255,255,.58)!important}' +
+    '.fcplus-card-name{position:absolute!important;left:50%!important;bottom:23px!important;transform:translateX(-50%)!important;z-index:46!important;max-width:88%!important;min-width:62px!important;height:18px!important;padding:0 6px!important;border-radius:5px!important;display:flex!important;align-items:center!important;justify-content:center!important;background:rgba(10,18,26,.88)!important;border:1px solid rgba(255,255,255,.20)!important;color:#fff!important;box-shadow:0 1px 4px rgba(0,0,0,.38)!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;pointer-events:none!important;font:800 8px/1 system-ui,-apple-system,Segoe UI,sans-serif!important}' +
+    '.fcplus-card-price{position:absolute!important;left:50%!important;bottom:2px!important;transform:translateX(-50%)!important;z-index:47!important;min-width:78px!important;height:20px!important;padding:0 6px!important;border-radius:6px!important;display:flex!important;align-items:center!important;justify-content:center!important;gap:3px!important;background:rgba(13,22,31,.96)!important;border:1px solid rgba(242,213,76,.78)!important;color:#fff!important;box-shadow:0 2px 5px rgba(0,0,0,.45)!important;white-space:nowrap!important;pointer-events:none!important;font:800 9px/1 system-ui,-apple-system,Segoe UI,sans-serif!important}' +
+    '.fcplus-card-price small{font:800 6px/1 system-ui,-apple-system,Segoe UI,sans-serif!important;letter-spacing:.04em!important;color:rgba(255,255,255,.60)!important}' +
     '.fcplus-card-price b{font:900 9px/1 system-ui,-apple-system,Segoe UI,sans-serif!important;color:#ffe26b!important}' +
     '.fcplus-card-price .fcplus-coin{font-size:7px!important;color:#f2d54c!important}' +
     '.fcplus-card-price.fcplus-price-loading{border-color:rgba(255,255,255,.22)!important;color:#ffffff9c!important}' +
     '.fcplus-card-price .fcplus-price-dots{font-size:8px!important;letter-spacing:1px!important}' +
-    '.phone .fcplus-card-price{bottom:-17px!important;min-width:70px!important;height:19px!important;padding:0 5px!important;border-radius:5px!important;font-size:8px!important}'
+    '.phone .fcplus-card-name{bottom:22px!important;max-width:90%!important;height:17px!important;padding:0 5px!important;font-size:7px!important}' +
+    '.phone .fcplus-card-price{bottom:2px!important;min-width:74px!important;height:19px!important;padding:0 5px!important;border-radius:5px!important;font-size:8px!important}'
   );
 
 
