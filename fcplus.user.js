@@ -726,6 +726,350 @@
     });
   }
 
+
+  function observeEaRequest(request, timeoutMs) {
+    return new Promise(function (resolve, reject) {
+      if (!request) {
+        reject(new Error('EA service returned no request'));
+        return;
+      }
+
+      var finished = false;
+      var timer = setTimeout(function () {
+        if (!finished) {
+          finished = true;
+          reject(new Error('EA service request timed out'));
+        }
+      }, timeoutMs || 10000);
+
+      function done(error, response) {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        if (error) {
+          reject(error);
+          return;
+        }
+        if (response && response.success === false) {
+          reject(new Error('EA service status ' + (response.status || (response.error && response.error.code) || 'failed')));
+          return;
+        }
+        resolve(response || {});
+      }
+
+      try {
+        if (typeof request.observe === 'function') {
+          var observer = {};
+          request.observe(observer, function (sender, response) {
+            try {
+              if (sender && typeof sender.unobserve === 'function') sender.unobserve(observer);
+            } catch (e) {}
+            done(null, response);
+          });
+        } else if (typeof request.then === 'function') {
+          request.then(function (response) { done(null, response); }).catch(function (error) { done(error); });
+        } else {
+          done(null, request);
+        }
+      } catch (e) {
+        done(e);
+      }
+    });
+  }
+
+  function ownedItemFromResponse(response, fallback) {
+    var payload = response && (response.response || response.data || response);
+    if (!payload) return fallback || null;
+    return payload.item ||
+      payload.itemData ||
+      (Array.isArray(payload.items) && payload.items[0]) ||
+      fallback ||
+      null;
+  }
+
+  function eaItemId(item) {
+    if (!item) return '';
+    var direct = item.id || item.idStr;
+    if (direct) return String(direct);
+    try {
+      if (typeof item.getId === 'function') {
+        var id = item.getId();
+        if (id) return String(id);
+      }
+    } catch (e) {}
+    var nested = item._item || item.itemData || item.data;
+    return nested && (nested.id || nested.idStr) ? String(nested.id || nested.idStr) : '';
+  }
+
+  function eaAuction(item) {
+    if (!item) return null;
+    try {
+      if (typeof item.getAuctionData === 'function') return item.getAuctionData();
+    } catch (e) {}
+    return item._auction || null;
+  }
+
+  function auctionIsWon(item) {
+    var auction = eaAuction(item);
+    if (!auction) return false;
+    try { if (typeof auction.isWon === 'function') return !!auction.isWon(); } catch (e) {}
+    return auction._bidState === 'highest' && (auction._tradeState === 'closed' || Number(auction.expires) <= 0);
+  }
+
+  function auctionIsSold(item) {
+    var auction = eaAuction(item);
+    if (!auction) return false;
+    try { if (typeof auction.isSold === 'function') return !!auction.isSold(); } catch (e) {}
+    return auction._tradeState === 'closed' && Number(auction.currentBid || 0) > 0;
+  }
+
+  function auctionIsExpired(item) {
+    var auction = eaAuction(item);
+    if (!auction) return false;
+    try { if (typeof auction.isExpired === 'function') return !!auction.isExpired(); } catch (e) {}
+    return Number(auction.expires) <= 0;
+  }
+
+  function auctionIsOutbid(item) {
+    var auction = eaAuction(item);
+    return !!auction && auction._bidState === 'outbid' && auction._tradeState === 'active';
+  }
+
+  async function directEaBid(item, price) {
+    var w = pageWindow();
+    var services;
+    try { services = w.services; } catch (e) { services = null; }
+    if (!services || !services.Item || typeof services.Item.bid !== 'function') {
+      throw new Error('EA bid service unavailable');
+    }
+    return observeEaRequest(services.Item.bid(item, price), 12000);
+  }
+
+  async function directEaList(item, sellBIN) {
+    var w = pageWindow();
+    var services;
+    try { services = w.services; } catch (e) { services = null; }
+    if (!services || !services.Item || typeof services.Item.list !== 'function') {
+      throw new Error('EA listing service unavailable');
+    }
+    var step = priceStep(sellBIN);
+    var start = legalDown(Math.max(150, sellBIN - step));
+    var response = await observeEaRequest(services.Item.list(item, start, sellBIN, 3600), 12000);
+    return { start: start, bin: sellBIN, duration: 3600, response: response };
+  }
+
+  async function requestWatchedItemsDirect() {
+    var w = pageWindow();
+    var services;
+    try { services = w.services; } catch (e) { services = null; }
+    if (!services || !services.Item || typeof services.Item.requestWatchedItems !== 'function') return [];
+    var response = await observeEaRequest(services.Item.requestWatchedItems(), 10000);
+    var payload = response && (response.response || response.data || response);
+    return payload && Array.isArray(payload.items) ? payload.items : [];
+  }
+
+  async function requestTransferItemsDirect() {
+    var w = pageWindow();
+    var services;
+    try { services = w.services; } catch (e) { services = null; }
+    if (!services || !services.Item || typeof services.Item.requestTransferItems !== 'function') return [];
+    var response = await observeEaRequest(services.Item.requestTransferItems(), 10000);
+    var payload = response && (response.response || response.data || response);
+    return payload && Array.isArray(payload.items) ? payload.items : [];
+  }
+
+  function sameTrackedItem(item, trade) {
+    if (!item || !trade) return false;
+    var itemId = eaItemId(item);
+    if (trade.itemId && itemId && String(trade.itemId) === String(itemId)) return true;
+    var auction = eaAuction(item);
+    if (trade.auctionId && auction && String(auction.tradeId || '') === String(trade.auctionId)) return true;
+    var definitionId = Number(item.definitionId) || 0;
+    return !!trade.definitionId && definitionId === Number(trade.definitionId);
+  }
+
+  async function listWonQuickFlipItem(item, trade) {
+    var market = Number(trade.market || state.market.stableBIN) || 0;
+    if (!market) throw new Error('No sell market price available');
+
+    var step = priceStep(market);
+    var sellBIN = legalDown(market - Math.max(0, state.undercutSteps) * step);
+    var listed = await directEaList(item, sellBIN);
+
+    trade.itemId = eaItemId(item) || trade.itemId || '';
+    trade.sellPrice = listed.bin;
+    trade.listedAt = Date.now();
+    trade.status = 'listed';
+    state.daily.listed++;
+    saveDaily();
+
+    log(
+      'LISTED · ' + trade.name +
+      ' · ' + listed.bin.toLocaleString() +
+      ' · 1 hour · bought ' + Number(trade.buyPrice || 0).toLocaleString()
+    );
+  }
+
+  async function processQuickFlipLiveTrade() {
+    var trade = state.liveTrade;
+    if (!trade || state.liveBusy) return false;
+
+    state.liveBusy = true;
+    try {
+      if (trade.status === 'bid') {
+        var watched = await requestWatchedItemsDirect();
+        var bidItem = watched.find(function (item) { return sameTrackedItem(item, trade); });
+
+        if (!bidItem) {
+          log('BID · waiting for Transfer Targets update');
+          return true;
+        }
+
+        var auction = eaAuction(bidItem);
+        var currentBid = Number(auction && (auction.currentBid || auction.startingBid)) || 0;
+
+        if (auctionIsWon(bidItem)) {
+          trade.buyPrice = currentBid || trade.buyPrice;
+          trade.itemId = eaItemId(bidItem) || trade.itemId || '';
+          trade.status = 'won';
+          state.daily.won++;
+          saveDaily();
+          log('WON · ' + trade.name + ' @ ' + Number(trade.buyPrice || 0).toLocaleString());
+          await listWonQuickFlipItem(bidItem, trade);
+          return true;
+        }
+
+        if (auctionIsOutbid(bidItem)) {
+          var next = currentBid ? currentBid + priceStep(currentBid) : 0;
+          if (next > 0 && next <= trade.maxEntry) {
+            log('REBID · ' + trade.name + ' @ ' + next.toLocaleString());
+            await directEaBid(bidItem, next);
+            trade.buyPrice = next;
+          } else {
+            log('LOST · ' + trade.name + ' · next bid ' + (next ? next.toLocaleString() : '—') + ' above max ' + trade.maxEntry.toLocaleString());
+            state.liveTrade = null;
+          }
+          return true;
+        }
+
+        if (auctionIsExpired(bidItem) && !auctionIsWon(bidItem)) {
+          log('LOST · ' + trade.name + ' · auction expired');
+          state.liveTrade = null;
+          return true;
+        }
+
+        log('BID · leading/active @ ' + currentBid.toLocaleString());
+        return true;
+      }
+
+      if (trade.status === 'listed') {
+        var transfer = await requestTransferItemsDirect();
+        var listedItem = transfer.find(function (item) { return sameTrackedItem(item, trade); });
+
+        if (!listedItem) {
+          log('LISTED · waiting for Transfer List update');
+          return true;
+        }
+
+        if (auctionIsSold(listedItem)) {
+          var auctionData = eaAuction(listedItem);
+          var salePrice = Number(auctionData && (auctionData.currentBid || auctionData.buyNowPrice)) || Number(trade.sellPrice) || 0;
+          var net = Math.floor(salePrice * 0.95);
+          var realized = net - Number(trade.buyPrice || 0);
+
+          state.daily.realizedProfit += realized;
+          state.daily.sold++;
+          state.trades++;
+          saveDaily();
+
+          log(
+            'SOLD · ' + trade.name +
+            ' · ' + salePrice.toLocaleString() +
+            ' · profit ' + (realized >= 0 ? '+' : '') + realized.toLocaleString()
+          );
+
+          state.liveTrade = null;
+          render();
+          return true;
+        }
+
+        if (auctionIsExpired(listedItem)) {
+          var marketNow = Number(state.market.stableBIN || trade.market) || Number(trade.sellPrice) || 0;
+          var relistStep = priceStep(marketNow);
+          var relistBIN = legalDown(marketNow - Math.max(0, state.undercutSteps) * relistStep);
+          log('RELIST · ' + trade.name + ' · ' + relistBIN.toLocaleString() + ' · 1 hour');
+          await directEaList(listedItem, relistBIN);
+          trade.sellPrice = relistBIN;
+          trade.listedAt = Date.now();
+          return true;
+        }
+
+        log('LISTED · ' + trade.name + ' · waiting for sale');
+        return true;
+      }
+
+      return false;
+    } finally {
+      state.liveBusy = false;
+    }
+  }
+
+  async function executeQuickFlipDecision(decision, candidate, stable, maxEntry) {
+    if (!decision || !decision.row || !decision.row.rawItem) {
+      throw new Error('Exact EA item is unavailable for live execution');
+    }
+
+    var price = Number(decision.price) || 0;
+    if (!price || price > maxEntry) {
+      throw new Error('Entry price is outside the current max entry');
+    }
+
+    var trade = {
+      type: decision.type.toLowerCase(),
+      name: candidate.name,
+      rating: candidate.rating,
+      definitionId: candidate.definitionId,
+      auctionId: String(decision.row.auctionId || ''),
+      itemId: String(decision.row.itemId || ''),
+      buyPrice: price,
+      market: stable,
+      maxEntry: maxEntry,
+      startedAt: Date.now(),
+      status: decision.type === 'BIN' ? 'buying' : 'bid'
+    };
+
+    state.liveTrade = trade;
+    log(decision.type + ' · submitting ' + candidate.name + ' @ ' + price.toLocaleString());
+
+    var response = await directEaBid(decision.row.rawItem, price);
+
+    if (decision.type === 'BIN') {
+      var owned = ownedItemFromResponse(response, null);
+      if (!owned) {
+        trade.status = 'won';
+        log('BOUGHT · ' + candidate.name + ' @ ' + price.toLocaleString() + ' · waiting to locate owned card');
+        var watched = await requestWatchedItemsDirect();
+        owned = watched.find(function (item) { return sameTrackedItem(item, trade) && auctionIsWon(item); }) || null;
+      }
+
+      if (!owned) {
+        throw new Error('Bought card could not be located for listing');
+      }
+
+      trade.itemId = eaItemId(owned) || trade.itemId;
+      trade.status = 'won';
+      state.daily.won++;
+      saveDaily();
+
+      log('BOUGHT · ' + candidate.name + ' @ ' + price.toLocaleString());
+      await listWonQuickFlipItem(owned, trade);
+    } else {
+      trade.status = 'bid';
+      log('BID · placed ' + candidate.name + ' @ ' + price.toLocaleString());
+    }
+  }
+
+
   async function scanSilverQuickFlipPlayers() {
     if (state.silverScanning) return;
     if (state.running) {
