@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC+ Auto Trader Mobile
 // @namespace    https://fcplus.local/
-// @version      0.8.9
+// @version      0.8.10
 // @description  FC+ Quick Flip market scanner, SBC candidate bridge, auto trader, card pricing and diagnostics for the EA FC Web App.
 // @homepageURL  https://github.com/mohdaie/Fcplus-trader
 // @updateURL    https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var APP_ID = 'fcplus-auto-v089';
+  var APP_ID = 'fcplus-auto-v0810';
   if (document.getElementById(APP_ID)) return;
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -1216,16 +1216,22 @@
     }
 
     var price = Number(decision.price) || 0;
-    var legalFloor = Number(candidate.priceFloor) || Number(decision.row.priceMin) || 0;
-    var legalCeiling = Number(candidate.priceCeiling) || Number(decision.row.priceMax) || 0;
-    if (!legalFloor || !legalCeiling) {
-      log('LIVE BLOCKED · EA price floor unavailable for exact card');
+    var legalFloor = Number(candidate.priceFloor) ||
+      Number(decision.row.priceMin) ||
+      fallbackBaseCardFloor(decision.row) ||
+      0;
+
+    if (!legalFloor) {
+      log('LIVE BLOCKED · minimum price unavailable for exact card');
       return;
     }
-    if (!price || price > maxEntry || price < legalFloor || price > legalCeiling) {
+
+    // This is an existing EA market listing. A missing maximum price-range field
+    // must not block the purchase: EA has already validated the auction price.
+    if (!price || price > maxEntry || price < legalFloor) {
       log(
         'LIVE BLOCKED · entry ' + price.toLocaleString() +
-        ' outside legal range ' + (legalFloor ? legalFloor.toLocaleString() : '—') +
+        ' outside strategy range ' + legalFloor.toLocaleString() +
         '–' + maxEntry.toLocaleString()
       );
       return;
@@ -1241,7 +1247,8 @@
       buyPrice: price,
       market: stable,
       maxEntry: maxEntry,
-      priceFloor: Number(candidate.priceFloor) || Number(decision.row.priceMin) || 0,
+      priceFloor: legalFloor,
+      priceFloorSource: candidate.priceFloorSource || (decision.row.priceMin ? 'EA exact' : 'base-card fallback'),
       startedAt: Date.now(),
       status: decision.type === 'BIN' ? 'submitting_bin' : 'submitting_bid'
     };
@@ -3367,6 +3374,7 @@
 
     candidate.priceFloor = targetInfo.priceFloor;
     candidate.priceCeiling = targetInfo.priceCeiling;
+    candidate.priceFloorSource = targetInfo.priceFloorSource;
 
     if (!targetInfo.floorKnown) {
       candidate.maxBid = 0;
@@ -4482,7 +4490,7 @@
     root.innerHTML =
       '<div class="fcp-native-head">' +
         '<button id="fcp-close" type="button">‹</button>' +
-        '<div><b>FC+ Trader</b><small>v0.8.9 · FC+ Quick Flip</small></div>' +
+        '<div><b>FC+ Trader</b><small>v0.8.10 · FC+ Quick Flip</small></div>' +
         '<span id="fcp-headstate">DRY</span>' +
       '</div>' +
       '<div id="fcp-body" class="fcp-native-body">' +
