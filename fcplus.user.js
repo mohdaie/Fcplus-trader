@@ -1098,6 +1098,483 @@
   }
 
 
+
+  function safeArray(value) {
+    if (!value) return [];
+    if (Array.isArray(value)) return value;
+    try {
+      if (typeof value.values === 'function') return Array.from(value.values());
+    } catch (e) {}
+    try {
+      if (typeof value.toArray === 'function') return value.toArray();
+    } catch (e) {}
+    try {
+      if (typeof value.length === 'number') return Array.prototype.slice.call(value);
+    } catch (e) {}
+    return [];
+  }
+
+  function sbcService() {
+    var w = pageWindow();
+    try { return w.services && w.services.SBC; } catch (e) { return null; }
+  }
+
+  function sbcEntityId(entity) {
+    return Number(entity && (entity.id || entity.setId || entity.challengeId || entity._id)) || 0;
+  }
+
+  function sbcEntityName(entity, fallback) {
+    return text(entity && (entity.name || entity.localizedName || entity.description || entity._name)) || fallback || 'Unnamed SBC';
+  }
+
+  function sbcIsComplete(entity) {
+    try { if (entity && typeof entity.isComplete === 'function') return !!entity.isComplete(); } catch (e) {}
+    try { if (entity && typeof entity.challengesComplete === 'function') return !!entity.challengesComplete(); } catch (e) {}
+    return !!(entity && (entity.complete || entity.completed || entity.status === 'COMPLETED'));
+  }
+
+  async function requestSbcSetsDirect() {
+    var service = sbcService();
+    if (!service || !service.repository) throw new Error('EA SBC service unavailable');
+
+    var sets = [];
+    try { sets = safeArray(service.repository.getSets && service.repository.getSets()); } catch (e) {}
+    if (!sets.length && typeof service.requestSets === 'function') {
+      await observeEaRequest(service.requestSets(), 12000);
+      try { sets = safeArray(service.repository.getSets && service.repository.getSets()); } catch (e) {}
+    }
+    return sets;
+  }
+
+  function extractChallengeRequirements(challenge) {
+    if (!challenge) return [];
+    var sources = [
+      challenge.eligibilityRequirements,
+      challenge.requirements,
+      challenge._eligibilityRequirements,
+      challenge._requirements,
+      challenge.data && challenge.data.eligibilityRequirements,
+      challenge.data && challenge.data.requirements,
+      challenge.challengeSquad && challenge.challengeSquad.requirements
+    ];
+    for (var i = 0; i < sources.length; i++) {
+      var rows = safeArray(sources[i]);
+      if (rows.length) return rows;
+    }
+    return [];
+  }
+
+  function readRequirementValue(req, keys) {
+    for (var i = 0; i < keys.length; i++) {
+      try {
+        var value = req && req[keys[i]];
+        if (value !== undefined && value !== null && value !== '') return value;
+      } catch (e) {}
+    }
+    return null;
+  }
+
+  function normalizePredicateValues(raw) {
+    var values = safeArray(raw);
+    if (!values.length && raw !== undefined && raw !== null && raw !== '') values = [raw];
+    return values.map(function (value) {
+      if (value && typeof value === 'object') {
+        return readRequirementValue(value, ['id','value','assetId','definitionId','leagueId','clubId','nationId','name']) || '';
+      }
+      return value;
+    }).filter(function (value) { return value !== '' && value !== null && value !== undefined; });
+  }
+
+  function normalizeSbcRequirement(req, index) {
+    var ctor = '';
+    try { ctor = req && req.constructor && req.constructor.name || ''; } catch (e) {}
+    var type = text(readRequirementValue(req, [
+      'challengeTypeName','requirementType','typeName','className','type','_type'
+    ]) || ctor || ('Requirement ' + (index + 1)));
+    var scope = text(readRequirementValue(req, ['scope','operation','comparison','_scope']) || '');
+    var count = Number(readRequirementValue(req, ['count','requiredCount','minCount','valueCount'])) || 0;
+    var overall = Number(readRequirementValue(req, ['overallValue','overall','rating','minRating'])) || 0;
+    var chemistry = Number(readRequirementValue(req, ['chemistryValue','chemistry','minChemistry'])) || 0;
+    var quality = text(readRequirementValue(req, ['playerQuality','quality','level']) || '');
+    var predicateType = text(readRequirementValue(req, ['predicateType','predicate','filterType','_predicateType']) || '');
+    var predicateValues = normalizePredicateValues(
+      readRequirementValue(req, ['predicateValues','values','value','ids','_predicateValues'])
+    );
+
+    return {
+      index: index,
+      type: type,
+      scope: scope,
+      count: count,
+      overall: overall,
+      chemistry: chemistry,
+      quality: quality,
+      predicateType: predicateType,
+      predicateValues: predicateValues,
+      raw: req
+    };
+  }
+
+  function sbcRequirementText(row) {
+    var parts = [row.type];
+    if (row.scope) parts.push(row.scope);
+    if (row.count) parts.push('count ' + row.count);
+    if (row.overall) parts.push('rating ' + row.overall);
+    if (row.chemistry) parts.push('chem ' + row.chemistry);
+    if (row.quality) parts.push(row.quality);
+    if (row.predicateType) parts.push(row.predicateType);
+    if (row.predicateValues && row.predicateValues.length) parts.push(row.predicateValues.join(', '));
+    return parts.join(' · ');
+  }
+
+  function deriveSbcScanParams(requirements) {
+    var params = {
+      level: 'any',
+      minRating: 0,
+      maxRating: 0,
+      nationId: -1,
+      leagueId: -1,
+      clubId: -1,
+      rareOnly: false,
+      mapped: [],
+      unmapped: []
+    };
+
+    requirements.forEach(function (row) {
+      var type = lower(row.type);
+      var predicate = lower(row.predicateType);
+      var scope = lower(row.scope);
+      var mapped = false;
+
+      var q = lower(row.quality);
+      if (q.indexOf('bronze') >= 0) { params.level = 'bronze'; mapped = true; }
+      if (q.indexOf('silver') >= 0) { params.level = 'silver'; mapped = true; }
+      if (q.indexOf('gold') >= 0) { params.level = 'gold'; mapped = true; }
+
+      if (type.indexOf('overall') >= 0 && row.overall) {
+        if (scope.indexOf('less') >= 0 || scope.indexOf('max') >= 0) {
+          params.maxRating = params.maxRating ? Math.min(params.maxRating, row.overall) : row.overall;
+        } else {
+          params.minRating = Math.max(params.minRating, row.overall);
+        }
+        mapped = true;
+      }
+
+      if ((predicate.indexOf('is_rare') >= 0 || predicate === 'rare') && row.count) {
+        params.rareOnly = true;
+        mapped = true;
+      }
+
+      if (row.predicateValues && row.predicateValues.length === 1) {
+        var id = Number(row.predicateValues[0]) || 0;
+        if (id && predicate.indexOf('league') >= 0) { params.leagueId = id; mapped = true; }
+        if (id && (predicate.indexOf('nation') >= 0 || predicate.indexOf('national') >= 0)) { params.nationId = id; mapped = true; }
+        if (id && (predicate.indexOf('club') >= 0 || predicate.indexOf('team') >= 0)) { params.clubId = id; mapped = true; }
+      }
+
+      (mapped ? params.mapped : params.unmapped).push(sbcRequirementText(row));
+    });
+
+    return params;
+  }
+
+  function criteriaForSbcScan(params) {
+    var w = pageWindow();
+    if (!w.UTSearchCriteriaDTO) return null;
+    var criteria = new w.UTSearchCriteriaDTO();
+
+    try { criteria.count = 20; } catch (e) {}
+    try { criteria.offset = 0; } catch (e) {}
+    try { criteria.type = (w.SearchType && w.SearchType.PLAYER) || 'player'; } catch (e) {}
+    try { criteria.level = params.level && params.level !== 'any' ? params.level : 'any'; } catch (e) {}
+    try { criteria.position = 'any'; } catch (e) {}
+    try { criteria.nation = params.nationId > 0 ? params.nationId : -1; } catch (e) {}
+    try { criteria.league = params.leagueId > 0 ? params.leagueId : -1; } catch (e) {}
+    try { criteria.club = params.clubId > 0 ? params.clubId : -1; } catch (e) {}
+    try { criteria.ovrMin = params.minRating > 0 ? params.minRating : 0; } catch (e) {}
+    try { criteria.ovrMax = params.maxRating > 0 ? params.maxRating : 0; } catch (e) {}
+    try { criteria.minBid = 0; criteria.maxBid = 0; criteria.minBuy = 0; criteria.maxBuy = 0; } catch (e) {}
+    try { criteria.maskedDefId = 0; criteria.isExactSearch = false; } catch (e) {}
+    return criteria;
+  }
+
+  function playerMatchesSbcParams(row, params) {
+    if (!row) return false;
+    if (params.minRating && row.rating < params.minRating) return false;
+    if (params.maxRating && row.rating > params.maxRating) return false;
+    if (params.nationId > 0 && row.nationId && row.nationId !== params.nationId) return false;
+    if (params.leagueId > 0 && row.leagueId && row.leagueId !== params.leagueId) return false;
+    if (params.clubId > 0 && row.clubId && row.clubId !== params.clubId) return false;
+    if (params.rareOnly && !row.rare) return false;
+    return true;
+  }
+
+  function renderSbcPanel() {
+    var sbc = state.sbc || {};
+    var status = document.querySelector('#fcp-sbc-status');
+    var setsBox = document.querySelector('#fcp-sbc-sets');
+    var challengesBox = document.querySelector('#fcp-sbc-challenges');
+    var reqBox = document.querySelector('#fcp-sbc-reqs');
+    var playersBox = document.querySelector('#fcp-sbc-players');
+    var scanReq = document.querySelector('#fcp-sbc-scanplayers');
+
+    if (status) status.textContent = sbc.status || 'Scan EA SBCs to begin';
+
+    if (setsBox) {
+      setsBox.innerHTML = '';
+      (sbc.sets || []).forEach(function (set) {
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'fcp-sbc-choice' + (Number(sbc.selectedSetId) === Number(set.id) ? ' selected' : '');
+        button.textContent = set.name + (set.complete ? ' · complete' : '');
+        button.disabled = !!set.complete;
+        button.addEventListener('click', function () { selectSbcSet(set.id); });
+        setsBox.appendChild(button);
+      });
+    }
+
+    if (challengesBox) {
+      challengesBox.innerHTML = '';
+      (sbc.challenges || []).forEach(function (challenge) {
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'fcp-sbc-choice small' + (Number(sbc.selectedChallengeId) === Number(challenge.id) ? ' selected' : '');
+        button.textContent = challenge.name;
+        button.addEventListener('click', function () { selectSbcChallenge(challenge.id); });
+        challengesBox.appendChild(button);
+      });
+    }
+
+    if (reqBox) {
+      reqBox.innerHTML = '';
+      if (!(sbc.requirements || []).length) {
+        var empty = document.createElement('div');
+        empty.className = 'fcp-sbc-empty';
+        empty.textContent = sbc.selectedChallengeId ? 'No requirements loaded yet' : 'Choose an SBC challenge';
+        reqBox.appendChild(empty);
+      } else {
+        sbc.requirements.forEach(function (row) {
+          var div = document.createElement('div');
+          div.className = 'fcp-sbc-req';
+          div.textContent = sbcRequirementText(row);
+          reqBox.appendChild(div);
+        });
+      }
+    }
+
+    if (scanReq) scanReq.disabled = !sbc.selectedChallengeId || !(sbc.requirements || []).length || !!sbc.scanning;
+
+    if (playersBox) {
+      playersBox.innerHTML = '';
+      (sbc.playerResults || []).slice(0, 12).forEach(function (row) {
+        var div = document.createElement('div');
+        div.className = 'fcp-sbc-player';
+        var name = document.createElement('b');
+        name.textContent = row.name + ' · ' + row.rating;
+        var price = document.createElement('span');
+        price.textContent = (row.buyNow ? row.buyNow.toLocaleString() : '—') + ' BIN';
+        div.appendChild(name);
+        div.appendChild(price);
+        playersBox.appendChild(div);
+      });
+    }
+  }
+
+  async function scanSbcSets() {
+    if (state.sbc.scanning) return;
+    state.sbc.scanning = true;
+    state.sbc.status = 'Scanning EA SBC list…';
+    renderSbcPanel();
+    log('SBC · scanning available SBCs');
+
+    try {
+      var sets = await requestSbcSetsDirect();
+      state.sbc.sets = sets.map(function (entity) {
+        return {
+          id: sbcEntityId(entity),
+          name: sbcEntityName(entity, 'SBC'),
+          complete: sbcIsComplete(entity),
+          entity: entity
+        };
+      }).filter(function (set) { return set.id && set.name; })
+        .sort(function (a, b) {
+          if (a.complete !== b.complete) return a.complete ? 1 : -1;
+          return a.name.localeCompare(b.name);
+        });
+
+      state.sbc.status = state.sbc.sets.length + ' SBCs found · choose one';
+      log('SBC · found ' + state.sbc.sets.length + ' sets');
+    } catch (e) {
+      state.sbc.status = 'SBC scan failed · ' + (e && e.message ? e.message : String(e));
+      log(state.sbc.status);
+    } finally {
+      state.sbc.scanning = false;
+      renderSbcPanel();
+    }
+  }
+
+  async function requestChallengesForSbcSet(setEntity) {
+    var service = sbcService();
+    if (!service || typeof service.requestChallengesForSet !== 'function') {
+      throw new Error('EA SBC challenge service unavailable');
+    }
+    var response = await observeEaRequest(service.requestChallengesForSet(setEntity), 12000);
+    var payload = response && (response.data || response.response || response);
+    return safeArray(payload && payload.challenges);
+  }
+
+  async function selectSbcSet(setId) {
+    var selected = (state.sbc.sets || []).find(function (set) { return Number(set.id) === Number(setId); });
+    if (!selected) return;
+
+    state.sbc.selectedSetId = selected.id;
+    state.sbc.selectedChallengeId = 0;
+    state.sbc.challenges = [];
+    state.sbc.requirements = [];
+    state.sbc.playerResults = [];
+    state.sbc.status = 'Scanning requirements · ' + selected.name;
+    renderSbcPanel();
+    log('SBC · selected ' + selected.name);
+
+    try {
+      var challenges = await requestChallengesForSbcSet(selected.entity);
+      state.sbc.challenges = challenges.map(function (challenge, index) {
+        return {
+          id: sbcEntityId(challenge) || (index + 1),
+          name: sbcEntityName(challenge, 'Challenge ' + (index + 1)),
+          entity: challenge
+        };
+      });
+      state.sbc.status = state.sbc.challenges.length + ' challenge(s) · choose one';
+      renderSbcPanel();
+
+      if (state.sbc.challenges.length === 1) {
+        await selectSbcChallenge(state.sbc.challenges[0].id);
+      }
+    } catch (e) {
+      state.sbc.status = 'Requirement scan failed · ' + (e && e.message ? e.message : String(e));
+      log(state.sbc.status);
+      renderSbcPanel();
+    }
+  }
+
+  async function loadSbcChallengeDetails(challenge) {
+    var requirements = extractChallengeRequirements(challenge);
+    if (requirements.length) return challenge;
+
+    var service = sbcService();
+    if (!service) return challenge;
+
+    try {
+      if (typeof service.loadChallenge === 'function') {
+        var response = await observeEaRequest(service.loadChallenge(challenge), 12000);
+        var payload = response && (response.data || response.response || response);
+        if (payload && typeof challenge.update === 'function') {
+          try { challenge.update(payload); } catch (e) {}
+        }
+        if (extractChallengeRequirements(payload).length) return payload;
+      }
+    } catch (e) {}
+
+    try {
+      if (typeof service.loadChallengeData === 'function') {
+        var response2 = await observeEaRequest(service.loadChallengeData(challenge), 12000);
+        var payload2 = response2 && (response2.data || response2.response || response2);
+        if (extractChallengeRequirements(payload2).length) return payload2;
+      }
+    } catch (e) {}
+
+    return challenge;
+  }
+
+  async function selectSbcChallenge(challengeId) {
+    var selected = (state.sbc.challenges || []).find(function (challenge) {
+      return Number(challenge.id) === Number(challengeId);
+    });
+    if (!selected) return;
+
+    state.sbc.selectedChallengeId = selected.id;
+    state.sbc.requirements = [];
+    state.sbc.playerResults = [];
+    state.sbc.status = 'Reading requirements · ' + selected.name;
+    renderSbcPanel();
+    log('SBC · challenge ' + selected.name);
+
+    try {
+      var detailed = await loadSbcChallengeDetails(selected.entity);
+      var requirements = extractChallengeRequirements(detailed).map(normalizeSbcRequirement);
+      state.sbc.requirements = requirements;
+      state.sbc.scanParams = deriveSbcScanParams(requirements);
+      state.sbc.status = requirements.length
+        ? requirements.length + ' requirement(s) loaded'
+        : 'EA returned no readable requirements for this challenge';
+      log('SBC · ' + selected.name + ' · ' + requirements.length + ' requirements');
+    } catch (e) {
+      state.sbc.status = 'Requirement read failed · ' + (e && e.message ? e.message : String(e));
+      log(state.sbc.status);
+    }
+
+    renderSbcPanel();
+  }
+
+  async function scanPlayersForSelectedSbc() {
+    if (state.sbc.scanning) return;
+    if (!state.sbc.selectedChallengeId || !(state.sbc.requirements || []).length) {
+      log('SBC · choose a challenge first');
+      return;
+    }
+
+    var params = state.sbc.scanParams || deriveSbcScanParams(state.sbc.requirements);
+    var criteria = criteriaForSbcScan(params);
+    if (!criteria) {
+      log('SBC · could not build EA player search');
+      return;
+    }
+
+    state.sbc.scanning = true;
+    state.sbc.playerResults = [];
+    state.sbc.status = 'Scanning players from SBC requirements…';
+    renderSbcPanel();
+    log('SBC PLAYER SCAN · mapped ' + params.mapped.length + '/' + state.sbc.requirements.length + ' requirements');
+
+    try {
+      var rows = [];
+      for (var page = 1; page <= 3; page++) {
+        var pageRows = await eaSearchWithCriteria(criteria, page);
+        rows = rows.concat(pageRows);
+        if (page < 3) await sleep(450);
+      }
+
+      var filtered = rows.filter(function (row) { return playerMatchesSbcParams(row, params); });
+      var unique = {};
+      filtered.forEach(function (row) {
+        var key = String(row.definitionId || row.name + ':' + row.rating);
+        if (!unique[key] || (row.buyNow && row.buyNow < unique[key].buyNow)) unique[key] = row;
+      });
+
+      state.sbc.playerResults = Object.keys(unique).map(function (key) { return unique[key]; })
+        .sort(function (a, b) {
+          return (a.buyNow || Infinity) - (b.buyNow || Infinity) || b.rating - a.rating;
+        });
+
+      state.sbc.status = state.sbc.playerResults.length
+        ? state.sbc.playerResults.length + ' matching market players found'
+        : 'No market players matched the mapped requirements';
+
+      log(
+        'SBC PLAYER SCAN · ' + state.sbc.playerResults.length + ' candidates' +
+        (params.unmapped.length ? ' · ' + params.unmapped.length + ' squad-level requirement(s) need solver logic' : '')
+      );
+    } catch (e) {
+      state.sbc.status = 'Player scan failed · ' + (e && e.message ? e.message : String(e));
+      log(state.sbc.status);
+    } finally {
+      state.sbc.scanning = false;
+      renderSbcPanel();
+    }
+  }
+
+
   async function scanSilverQuickFlipPlayers(options) {
     options = options || {};
     if (state.silverScanning) return;
