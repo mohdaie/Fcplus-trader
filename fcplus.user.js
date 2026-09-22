@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC+ Auto Trader Mobile
 // @namespace    https://fcplus.local/
-// @version      0.8.6
+// @version      0.8.7
 // @description  FC+ Quick Flip market scanner, SBC candidate bridge, auto trader, card pricing and diagnostics for the EA FC Web App.
 // @homepageURL  https://github.com/mohdaie/Fcplus-trader
 // @updateURL    https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var APP_ID = 'fcplus-auto-v086';
+  var APP_ID = 'fcplus-auto-v087';
   if (document.getElementById(APP_ID)) return;
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -271,13 +271,55 @@
     return Math.max(0, maxBid);
   }
 
-  function quickFlipEntryFor(bin, profitTarget) {
+  function eaPriceFloor(rows) {
+    var floors = (rows || []).map(function (row) {
+      return Number(row && row.priceMin) || 0;
+    }).filter(function (value) { return value > 0; });
+    return floors.length ? Math.max.apply(Math, floors) : 0;
+  }
+
+  function eaPriceCeiling(rows) {
+    var ceilings = (rows || []).map(function (row) {
+      return Number(row && row.priceMax) || 0;
+    }).filter(function (value) { return value > 0; });
+    return ceilings.length ? Math.min.apply(Math, ceilings) : 0;
+  }
+
+  function quickFlipEntryFor(bin, profitTarget, priceFloor) {
     if (!bin) return 0;
     var net = Math.floor(bin * 0.95);
     var target = Math.max(state.minProfit, Number(profitTarget) || state.minProfit);
+    var floor = Math.max(0, Number(priceFloor) || 0);
     var ceiling = legalDown(net - target);
+
     if (state.maxBidCap > 0) ceiling = Math.min(ceiling, state.maxBidCap);
-    return Math.max(0, ceiling);
+
+    // If the profit target requires a price below EA's legal minimum price
+    // range, that target is impossible for this card.
+    if (floor > 0 && ceiling < floor) return 0;
+
+    return Math.max(floor || 0, ceiling);
+  }
+
+  function bestQuickFlipTarget(bin, rows) {
+    var net = Math.floor(Number(bin || 0) * 0.95);
+    var floor = eaPriceFloor(rows);
+    var preferred = Math.max(state.minProfit, state.quickFlipPreferredProfit);
+    var maxPossibleProfit = floor > 0 ? net - floor : 0;
+    var preferredEntry = quickFlipEntryFor(bin, preferred, floor);
+    var floorEntry = quickFlipEntryFor(bin, state.minProfit, floor);
+
+    return {
+      priceFloor: floor,
+      priceCeiling: eaPriceCeiling(rows),
+      netSale: net,
+      maxPossibleProfit: maxPossibleProfit,
+      preferredTarget: preferred,
+      preferredEntry: preferredEntry,
+      floorEntry: floorEntry,
+      preferredPossible: preferredEntry > 0,
+      floorPossible: floorEntry > 0
+    };
   }
 
   function scanMarket() {
@@ -572,6 +614,9 @@
         currentBid: Number(auction && auction.currentBid) || 0,
         timeSeconds: Number(auction && auction.expires) || 999999,
         marketAverage: Number(item && item._marketAverage) || 0,
+        priceMin: Number(item && item._itemPriceLimits && item._itemPriceLimits.minimum) || 0,
+        priceMax: Number(item && item._itemPriceLimits && item._itemPriceLimits.maximum) || 0,
+        discardValue: Number(item && (item.discardValue || item._discardValue)) || 0,
         leagueId: Number(item && (item.leagueId || (item._staticData && (item._staticData.leagueId || item._staticData.league)))) || 0,
         clubId: Number(item && (item.teamId || item.clubId || (item._staticData && (item._staticData.teamId || item._staticData.clubId || item._staticData.team)))) || 0,
         nationId: Number(item && (item.nationId || (item._staticData && (item._staticData.nationId || item._staticData.nation)))) || 0,
@@ -4243,7 +4288,7 @@
     root.innerHTML =
       '<div class="fcp-native-head">' +
         '<button id="fcp-close" type="button">‹</button>' +
-        '<div><b>FC+ Trader</b><small>v0.8.6 · FC+ Quick Flip</small></div>' +
+        '<div><b>FC+ Trader</b><small>v0.8.7 · FC+ Quick Flip</small></div>' +
         '<span id="fcp-headstate">DRY</span>' +
       '</div>' +
       '<div id="fcp-body" class="fcp-native-body">' +
