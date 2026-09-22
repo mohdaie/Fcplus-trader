@@ -88,6 +88,7 @@
       requirements: [],
       scanParams: null,
       playerResults: [],
+      selectionSeq: 0,
       status: 'Scan EA SBCs to begin'
     },
     market: {
@@ -1622,13 +1623,24 @@
     if (playersBox) {
       playersBox.innerHTML = '';
       (sbc.playerResults || []).slice(0, 12).forEach(function (row) {
+        enrichPlayerMetadata(row);
+
         var div = document.createElement('div');
         div.className = 'fcp-sbc-player';
-        var name = document.createElement('b');
-        name.textContent = row.name + ' · ' + row.rating;
+
+        var details = document.createElement('b');
+        var nation = (row.nationFlag ? row.nationFlag + ' ' : '') + (row.nationName || '—');
+        details.textContent =
+          row.name + ' · ' + row.rating +
+          ' | ' + (row.qualityLabel || '—') +
+          ' | ' + (row.clubName || '—') +
+          ' | ' + (row.leagueName || '—') +
+          ' | ' + nation;
+
         var price = document.createElement('span');
         price.textContent = (row.buyNow ? row.buyNow.toLocaleString() : '—') + ' BIN';
-        div.appendChild(name);
+
+        div.appendChild(details);
         div.appendChild(price);
         playersBox.appendChild(div);
       });
@@ -1682,6 +1694,7 @@
     var selected = (state.sbc.sets || []).find(function (set) { return Number(set.id) === Number(setId); });
     if (!selected) return;
 
+    state.sbc.selectionSeq++;
     state.sbc.selectedSetId = selected.id;
     state.sbc.selectedChallengeId = 0;
     state.sbc.challenges = [];
@@ -1748,6 +1761,7 @@
     });
     if (!selected) return;
 
+    var selectionSeq = ++state.sbc.selectionSeq;
     state.sbc.selectedChallengeId = selected.id;
     state.sbc.requirements = [];
     state.sbc.playerResults = [];
@@ -1757,6 +1771,7 @@
 
     try {
       var detailed = await loadSbcChallengeDetails(selected.entity);
+      if (selectionSeq !== state.sbc.selectionSeq) return;
       var requirements = extractChallengeRequirements(detailed).map(normalizeSbcRequirement);
       state.sbc.requirements = requirements;
       state.sbc.scanParams = deriveSbcScanParams(requirements);
@@ -1765,11 +1780,12 @@
         : 'EA returned no readable requirements for this challenge';
       log('SBC · ' + selected.name + ' · ' + requirements.length + ' requirements');
     } catch (e) {
+      if (selectionSeq !== state.sbc.selectionSeq) return;
       state.sbc.status = 'Requirement read failed · ' + (e && e.message ? e.message : String(e));
       log(state.sbc.status);
     }
 
-    renderSbcPanel();
+    if (selectionSeq === state.sbc.selectionSeq) renderSbcPanel();
   }
 
   async function scanPlayersForSelectedSbc() {
@@ -1807,8 +1823,9 @@
         if (!unique[key] || (row.buyNow && row.buyNow < unique[key].buyNow)) unique[key] = row;
       });
 
-      state.sbc.playerResults = Object.keys(unique).map(function (key) { return unique[key]; })
-        .sort(function (a, b) {
+      state.sbc.playerResults = Object.keys(unique).map(function (key) {
+        return enrichPlayerMetadata(unique[key]);
+      }).sort(function (a, b) {
           return (a.buyNow || Infinity) - (b.buyNow || Infinity) || b.rating - a.rating;
         });
 
@@ -3755,7 +3772,7 @@
     root.innerHTML =
       '<div class="fcp-native-head">' +
         '<button id="fcp-close" type="button">‹</button>' +
-        '<div><b>FC+ Trader</b><small>v0.7.0 · Silver Quickflip</small></div>' +
+        '<div><b>FC+ Trader</b><small>v0.7.1 · Silver Quickflip</small></div>' +
         '<span id="fcp-headstate">DRY</span>' +
       '</div>' +
       '<div id="fcp-body" class="fcp-native-body">' +
@@ -4062,7 +4079,7 @@
     '#' + APP_ID + ' .fcp-sbc-player-btn{margin-top:12px}' +
     '#' + APP_ID + ' .fcp-sbc-players{display:flex;flex-direction:column;gap:6px}' +
     '#' + APP_ID + ' .fcp-sbc-player{display:flex;justify-content:space-between;gap:8px;padding:8px 9px;border-radius:9px;background:#172431}' +
-    '#' + APP_ID + ' .fcp-sbc-player b{color:#fff;font-size:10px}' +
+    '#' + APP_ID + ' .fcp-sbc-player b{color:#fff;font-size:10px;line-height:1.45;white-space:normal;overflow-wrap:anywhere}' +
     '#' + APP_ID + ' .fcp-sbc-player span{color:#75d8ff;font-size:9px;white-space:nowrap}' +
     '#' + APP_ID + ' .fcp-settings-block{padding:14px 0;border-bottom:1px solid #ffffff0e}' +
     '#' + APP_ID + ' .fcp-settings-block:last-child{border-bottom:0;padding-bottom:0}' +
