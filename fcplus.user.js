@@ -1509,14 +1509,22 @@
   }
 
   function log(message) {
+    var line = new Date().toLocaleTimeString() + '  ' + message;
+    state.logHistory = state.logHistory || [];
+    state.logHistory.unshift(line);
+    if (state.logHistory.length > 120) state.logHistory.length = 120;
+
     var action = document.querySelector('#fcp-action');
     if (action) action.textContent = message;
+
     var box = document.querySelector('#fcp-log');
     if (box) {
-      var row = document.createElement('div');
-      row.textContent = new Date().toLocaleTimeString() + '  ' + message;
-      box.prepend(row);
-      while (box.children.length > 7) box.lastElementChild.remove();
+      box.innerHTML = '';
+      state.logHistory.forEach(function (entry) {
+        var row = document.createElement('div');
+        row.textContent = entry;
+        box.appendChild(row);
+      });
     }
   }
 
@@ -1553,6 +1561,47 @@
     }
   }
 
+
+  function renderQuickFlip() {
+    var q = state.quickFlip || {};
+    var candidate = q.candidate;
+    var status = document.querySelector('#fcp-result-status');
+    var player = document.querySelector('#fcp-result-player');
+    var market = document.querySelector('#fcp-result-market');
+    var maxBid = document.querySelector('#fcp-result-maxbid');
+    var profit = document.querySelector('#fcp-result-profit');
+    var scanMeta = document.querySelector('#fcp-result-meta');
+
+    if (status) status.textContent = q.status || 'Ready to scan silver players';
+    if (player) player.textContent = candidate ? (candidate.name + ' · ' + candidate.rating) : '—';
+    if (market) market.textContent = candidate && candidate.stableBIN ? candidate.stableBIN.toLocaleString() : '—';
+    if (maxBid) maxBid.textContent = candidate && candidate.maxBid ? candidate.maxBid.toLocaleString() : '—';
+    if (profit) {
+      if (candidate && Number.isFinite(candidate.expectedProfit)) {
+        profit.textContent = (candidate.expectedProfit >= 0 ? '+' : '') + candidate.expectedProfit.toLocaleString();
+      } else {
+        profit.textContent = '—';
+      }
+    }
+    if (scanMeta) {
+      scanMeta.textContent = q.scannedListings
+        ? (q.scannedListings + ' listings · ' + q.uniquePlayers + ' players · ' + q.checkedPlayers + ' checked')
+        : 'No scan yet';
+    }
+
+    var cMin = document.querySelector('#fcp-cond-profit');
+    var cBid = document.querySelector('#fcp-cond-bid');
+    var cRelist = document.querySelector('#fcp-cond-relist');
+    var cMode = document.querySelector('#fcp-cond-mode');
+    var cTrades = document.querySelector('#fcp-cond-trades');
+    if (cMin) cMin.textContent = 'Profit ≥ ' + state.minProfit.toLocaleString();
+    if (cBid) cBid.textContent = state.autoBid ? 'Auto bid / rebid' : 'Bid off';
+    if (cRelist) cRelist.textContent = state.autoSell ? 'Auto relist' : 'Relist off';
+    if (cMode) cMode.textContent = state.dryRun ? 'Dry run' : 'Live';
+    if (cTrades) cTrades.textContent = 'Max ' + state.maxTrades + ' trades';
+  }
+
+
   function render() {
     var status = document.querySelector('#fcp-state');
     var start = document.querySelector('#fcp-start');
@@ -1575,6 +1624,7 @@
     var dry = document.querySelector('#fcp-dry');
     if (headState && dry) headState.textContent = dry.checked ? 'DRY' : 'LIVE';
     renderMarket();
+    renderQuickFlip();
   }
 
   function readUI() {
@@ -2331,69 +2381,114 @@
     root.innerHTML =
       '<div class="fcp-native-head">' +
         '<button id="fcp-close" type="button">‹</button>' +
-        '<div><b>FC+ Trader</b><small>v0.4.3 · card price view</small></div>' +
+        '<div><b>FC+ Trader</b><small>v0.5.0 · Silver Quickflip</small></div>' +
         '<span id="fcp-headstate">DRY</span>' +
       '</div>' +
       '<div id="fcp-body" class="fcp-native-body">' +
-        '<section class="fcp-section">' +
-          '<div class="fcp-top"><span id="fcp-state" data-on="0">STOPPED</span><span>Trades <b id="fcp-trades">0/' + state.maxTrades + '</b></span></div>' +
-          '<div class="fcp-market">' +
-            '<div><small>MIN BIN</small><b id="fcp-minbin">—</b></div>' +
-            '<div><small>STABLE BIN</small><b id="fcp-bin">—</b></div>' +
-            '<div><small>MIN BID</small><b id="fcp-bid">—</b></div>' +
-            '<div><small>MAX BID</small><b id="fcp-maxbid">—</b></div>' +
+
+        '<section class="fcp-section fcp-method-card">' +
+          '<div class="fcp-eyebrow">TRADING METHOD</div>' +
+          '<div class="fcp-method-title-row">' +
+            '<div><h2>Silver Quickflip</h2><p>FC+ finds the player. You do not need to key in a name.</p></div>' +
+            '<span id="fcp-state" data-on="0">STOPPED</span>' +
           '</div>' +
-          '<div class="fcp-sourcebar">' +
-            '<span>FUT.GG <b id="fcp-futgg">—</b></span>' +
-            '<span>SOURCE <b id="fcp-source">PAGE</b></span>' +
-            '<span>CONF <b id="fcp-confidence">—</b></span>' +
-          '</div>' +
-          '<div id="fcp-scaninfo" class="fcp-scaninfo">Not scanned</div>' +
-          '<button id="fcp-smartprice" class="fcp-smartprice" type="button">SMART PRICE</button>' +
-          '<div class="fcp-fastrow">' +
-            '<button id="fcp-fastbin" type="button">EA FAST BIN</button>' +
-            '<button id="fcp-scanall" type="button">FULL PAGE SCAN</button>' +
-          '</div>' +
+          '<button id="fcp-scanplayer" class="fcp-primary" type="button">SCAN PLAYER</button>' +
         '</section>' +
 
         '<section class="fcp-section">' +
-          '<h3>Trading</h3>' +
-          '<div class="fcp-grid three">' +
-            '<label>MIN PROFIT<input id="fcp-minprofit" type="number" inputmode="numeric" value="' + state.minProfit + '"></label>' +
-            '<label>MAX BID CAP<input id="fcp-bidcap" type="number" inputmode="numeric" value="' + (state.maxBidCap || '') + '" placeholder="Auto"></label>' +
-            '<label>MAX BIN BUY<input id="fcp-maxbin" type="number" inputmode="numeric" value="' + (state.maxBinBuy || '') + '" placeholder="Off"></label>' +
+          '<div class="fcp-section-title"><h3>Result</h3><span>Trades <b id="fcp-trades">0/' + state.maxTrades + '</b></span></div>' +
+          '<div id="fcp-result-status" class="fcp-result-status">Ready to scan silver players</div>' +
+          '<div class="fcp-result-grid">' +
+            '<div class="fcp-result-player"><small>PLAYER</small><b id="fcp-result-player">—</b></div>' +
+            '<div><small>MARKET</small><b id="fcp-result-market">—</b></div>' +
+            '<div><small>MAX BID</small><b id="fcp-result-maxbid">—</b></div>' +
+            '<div><small>EST. PROFIT</small><b id="fcp-result-profit">—</b></div>' +
           '</div>' +
-          '<div class="fcp-switches">' +
-            '<label><span>Auto bid / rebid</span><input id="fcp-autobid" type="checkbox"' + (state.autoBid ? ' checked' : '') + '></label>' +
-            '<label><span>Auto Buy Now</span><input id="fcp-autobin" type="checkbox"' + (state.autoBuyNow ? ' checked' : '') + '></label>' +
-            '<label><span>Auto relist</span><input id="fcp-autosell" type="checkbox"' + (state.autoSell ? ' checked' : '') + '></label>' +
-            '<label><span>Dry run</span><input id="fcp-dry" type="checkbox"' + (state.dryRun ? ' checked' : '') + '></label>' +
-          '</div>' +
+          '<div id="fcp-result-meta" class="fcp-result-meta">No scan yet</div>' +
         '</section>' +
 
         '<section class="fcp-section">' +
-          '<h3>Player Cards</h3>' +
-          '<div class="fcp-switches fcp-display-switches">' +
-            '<label><span><b>Alternate positions</b><small>FUTBIN-style position tabs attached to the right edge of each card.</small></span><input id="fcp-altpositions" type="checkbox"' + (state.showAltPositions ? ' checked' : '') + '></label>' +
-            '<label><span><b>Min BIN price</b><small>Show a compact market-price badge below every player card.</small></span><input id="fcp-cardprices" type="checkbox"' + (state.showCardPrices ? ' checked' : '') + '></label>' +
+          '<h3>Condition</h3>' +
+          '<div class="fcp-condition-chips">' +
+            '<span>Silver only</span>' +
+            '<span id="fcp-cond-profit">Profit ≥ ' + state.minProfit + '</span>' +
+            '<span id="fcp-cond-bid">' + (state.autoBid ? 'Auto bid / rebid' : 'Bid off') + '</span>' +
+            '<span id="fcp-cond-relist">' + (state.autoSell ? 'Auto relist' : 'Relist off') + '</span>' +
+            '<span id="fcp-cond-mode">' + (state.dryRun ? 'Dry run' : 'Live') + '</span>' +
+            '<span id="fcp-cond-trades">Max ' + state.maxTrades + ' trades</span>' +
           '</div>' +
         '</section>' +
 
-        '<section class="fcp-section">' +
-          '<h3>Limits</h3>' +
-          '<div class="fcp-grid">' +
-            '<label>SESSION MIN<input id="fcp-session" type="number" inputmode="numeric" value="' + state.sessionMinutes + '"></label>' +
-            '<label>MAX TRADES<input id="fcp-maxtrades" type="number" inputmode="numeric" value="' + state.maxTrades + '"></label>' +
-            '<label>DELAY SEC<input id="fcp-delay" type="number" inputmode="decimal" step="0.5" value="' + (state.pollMs / 1000) + '"></label>' +
-            '<label>DAILY TARGET<input id="fcp-dailytarget" type="number" inputmode="numeric" value="' + state.dailyTarget + '"></label>' +
-            '<label>FULL SCAN PAGE CAP<input id="fcp-maxscanpages" type="number" inputmode="numeric" min="1" max="100" value="' + state.maxScanPages + '"></label>' +
-          '</div>' +
-        '</section>' +
-
-        '<section class="fcp-section">' +
+        '<section class="fcp-section fcp-auto-card">' +
           '<div class="fcp-profit"><span>Estimated listed profit today</span><b><span id="fcp-profit">' + state.daily.estimatedProfit.toLocaleString() + '</span> coins</b></div>' +
-          '<div id="fcp-action">Ready</div>' +
-          '<button id="fcp-start" class="fcp-start" data-on="0" type="button">START AUTO</button>' +
+          '<div id="fcp-action">Ready · scan a player first</div>' +
+          '<button id="fcp-start" class="fcp-start" data-on="0" type="button">AUTO TRADE</button>' +
+        '</section>' +
+
+        '<details class="fcp-fold">' +
+          '<summary><span>Smart Price</span><b>›</b></summary>' +
+          '<div class="fcp-fold-body">' +
+            '<div class="fcp-market">' +
+              '<div><small>MIN BIN</small><b id="fcp-minbin">—</b></div>' +
+              '<div><small>STABLE BIN</small><b id="fcp-bin">—</b></div>' +
+              '<div><small>MIN BID</small><b id="fcp-bid">—</b></div>' +
+              '<div><small>MAX BID</small><b id="fcp-maxbid">—</b></div>' +
+            '</div>' +
+            '<div class="fcp-sourcebar">' +
+              '<span>FUT.GG <b id="fcp-futgg">—</b></span>' +
+              '<span>SOURCE <b id="fcp-source">PAGE</b></span>' +
+              '<span>CONF <b id="fcp-confidence">—</b></span>' +
+            '</div>' +
+            '<div id="fcp-scaninfo" class="fcp-scaninfo">Not scanned</div>' +
+            '<button id="fcp-smartprice" class="fcp-smartprice" type="button">SMART PRICE</button>' +
+            '<div class="fcp-fastrow">' +
+              '<button id="fcp-fastbin" type="button">EA FAST BIN</button>' +
+              '<button id="fcp-scanall" type="button">FULL PAGE SCAN</button>' +
+            '</div>' +
+          '</div>' +
+        '</details>' +
+
+        '<details class="fcp-fold">' +
+          '<summary><span>Settings</span><b>›</b></summary>' +
+          '<div class="fcp-fold-body">' +
+            '<div class="fcp-settings-block">' +
+              '<h3>Trading</h3>' +
+              '<div class="fcp-grid three">' +
+                '<label>MIN PROFIT<input id="fcp-minprofit" type="number" inputmode="numeric" value="' + state.minProfit + '"></label>' +
+                '<label>MAX BID CAP<input id="fcp-bidcap" type="number" inputmode="numeric" value="' + (state.maxBidCap || '') + '" placeholder="Auto"></label>' +
+                '<label>MAX BIN BUY<input id="fcp-maxbin" type="number" inputmode="numeric" value="' + (state.maxBinBuy || '') + '" placeholder="Off"></label>' +
+              '</div>' +
+              '<div class="fcp-switches">' +
+                '<label><span>Auto bid / rebid</span><input id="fcp-autobid" type="checkbox"' + (state.autoBid ? ' checked' : '') + '></label>' +
+                '<label><span>Auto Buy Now</span><input id="fcp-autobin" type="checkbox"' + (state.autoBuyNow ? ' checked' : '') + '></label>' +
+                '<label><span>Auto relist</span><input id="fcp-autosell" type="checkbox"' + (state.autoSell ? ' checked' : '') + '></label>' +
+                '<label><span>Dry run</span><input id="fcp-dry" type="checkbox"' + (state.dryRun ? ' checked' : '') + '></label>' +
+              '</div>' +
+            '</div>' +
+
+            '<div class="fcp-settings-block">' +
+              '<h3>Player Cards</h3>' +
+              '<div class="fcp-switches fcp-display-switches">' +
+                '<label><span><b>Alternate positions</b><small>FUTBIN-style position tabs attached to the right edge of each card.</small></span><input id="fcp-altpositions" type="checkbox"' + (state.showAltPositions ? ' checked' : '') + '></label>' +
+                '<label><span><b>Min BIN price</b><small>Show a compact market-price badge below every player card.</small></span><input id="fcp-cardprices" type="checkbox"' + (state.showCardPrices ? ' checked' : '') + '></label>' +
+              '</div>' +
+            '</div>' +
+
+            '<div class="fcp-settings-block">' +
+              '<h3>Limits</h3>' +
+              '<div class="fcp-grid">' +
+                '<label>SESSION MIN<input id="fcp-session" type="number" inputmode="numeric" value="' + state.sessionMinutes + '"></label>' +
+                '<label>MAX TRADES<input id="fcp-maxtrades" type="number" inputmode="numeric" value="' + state.maxTrades + '"></label>' +
+                '<label>DELAY SEC<input id="fcp-delay" type="number" inputmode="decimal" step="0.5" value="' + (state.pollMs / 1000) + '"></label>' +
+                '<label>DAILY TARGET<input id="fcp-dailytarget" type="number" inputmode="numeric" value="' + state.dailyTarget + '"></label>' +
+                '<label>FULL SCAN PAGE CAP<input id="fcp-maxscanpages" type="number" inputmode="numeric" min="1" max="100" value="' + state.maxScanPages + '"></label>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+        '</details>' +
+
+        '<section class="fcp-section fcp-diagnostics">' +
+          '<div class="fcp-section-title"><h3>Diagnostic</h3><span>latest first</span></div>' +
           '<div id="fcp-log"></div>' +
         '</section>' +
       '</div>';
@@ -2402,8 +2497,20 @@
 
     root.querySelector('#fcp-close').addEventListener('click', closeNativePanel);
 
+    root.querySelector('#fcp-scanplayer').addEventListener('click', function () {
+      scanSilverQuickFlipPlayers();
+    });
+
     root.querySelector('#fcp-start').addEventListener('click', function () {
-      if (state.running) stop('Stopped by user'); else start();
+      if (state.running) {
+        stop('Stopped by user');
+      } else {
+        if (!state.quickFlip || !state.quickFlip.candidate) {
+          log('Scan Player first so FC+ can choose a Silver Quickflip candidate');
+          return;
+        }
+        start();
+      }
     });
 
     root.querySelector('#fcp-smartprice').addEventListener('click', function () {
@@ -2427,11 +2534,12 @@
         if (input.id === 'fcp-altpositions' || input.id === 'fcp-cardprices') refreshVisibleAltPositions();
         var hs = root.querySelector('#fcp-headstate');
         if (hs) hs.textContent = root.querySelector('#fcp-dry').checked ? 'DRY' : 'LIVE';
+        renderQuickFlip();
       });
     });
 
     render();
-    log('Ready · FC+ is integrated into the EA UI');
+    log('Ready · Silver Quickflip workflow loaded');
 
     installNativeInteractionBridge();
     installPlayerCardEnhancer();
