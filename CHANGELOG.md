@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.2
+
+- Added full-market multi-page scan from the current Search Results page.
+- Added absolute **MIN BIN**, stable BIN, global minimum bid, and calculated max bid.
+- Added **SCAN ALL PAGES** control with a configurable page cap (default 40, max 100).
+- Full-market valuation is cached for five minutes so the trading loop does not immediately overwrite it with one page.
+- Scan stops if Next disappears, results stop changing, or the configured page cap is reached.
+
 ## 0.3.1
 
 - Moved FC+ distribution to GitHub.
