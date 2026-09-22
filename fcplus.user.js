@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC+ Auto Trader Mobile
 // @namespace    https://fcplus.local/
-// @version      0.8.7
+// @version      0.8.8
 // @description  FC+ Quick Flip market scanner, SBC candidate bridge, auto trader, card pricing and diagnostics for the EA FC Web App.
 // @homepageURL  https://github.com/mohdaie/Fcplus-trader
 // @updateURL    https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var APP_ID = 'fcplus-auto-v087';
+  var APP_ID = 'fcplus-auto-v088';
   if (document.getElementById(APP_ID)) return;
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -304,21 +304,24 @@
   function bestQuickFlipTarget(bin, rows) {
     var net = Math.floor(Number(bin || 0) * 0.95);
     var floor = eaPriceFloor(rows);
+    var ceiling = eaPriceCeiling(rows);
+    var rangeKnown = floor > 0 && ceiling > 0 && ceiling >= floor;
     var preferred = Math.max(state.minProfit, state.quickFlipPreferredProfit);
-    var maxPossibleProfit = floor > 0 ? net - floor : 0;
-    var preferredEntry = quickFlipEntryFor(bin, preferred, floor);
-    var floorEntry = quickFlipEntryFor(bin, state.minProfit, floor);
+    var maxPossibleProfit = rangeKnown ? net - floor : 0;
+    var preferredEntry = rangeKnown ? quickFlipEntryFor(bin, preferred, floor) : 0;
+    var floorEntry = rangeKnown ? quickFlipEntryFor(bin, state.minProfit, floor) : 0;
 
     return {
       priceFloor: floor,
-      priceCeiling: eaPriceCeiling(rows),
+      priceCeiling: ceiling,
+      rangeKnown: rangeKnown,
       netSale: net,
       maxPossibleProfit: maxPossibleProfit,
       preferredTarget: preferred,
       preferredEntry: preferredEntry,
       floorEntry: floorEntry,
-      preferredPossible: preferredEntry > 0,
-      floorPossible: floorEntry > 0
+      preferredPossible: rangeKnown && preferredEntry > 0,
+      floorPossible: rangeKnown && floorEntry > 0
     };
   }
 
@@ -948,6 +951,9 @@
     var limits = item && item._itemPriceLimits || {};
     var floor = Math.max(0, Number(limits.minimum) || 0);
     var ceiling = Math.max(0, Number(limits.maximum) || 0);
+    if (!floor || !ceiling || ceiling < floor) {
+      throw new Error('EA price range unavailable for owned card');
+    }
 
     var requestedBIN = legalDown(sellBIN);
     var legalBIN = Math.max(floor || 150, requestedBIN);
@@ -1160,7 +1166,12 @@
 
     var price = Number(decision.price) || 0;
     var legalFloor = Number(candidate.priceFloor) || Number(decision.row.priceMin) || 0;
-    if (!price || price > maxEntry || (legalFloor > 0 && price < legalFloor)) {
+    var legalCeiling = Number(candidate.priceCeiling) || Number(decision.row.priceMax) || 0;
+    if (!legalFloor || !legalCeiling) {
+      log('LIVE BLOCKED · EA price range unavailable for exact card');
+      return;
+    }
+    if (!price || price > maxEntry || price < legalFloor || price > legalCeiling) {
       log(
         'LIVE BLOCKED · entry ' + price.toLocaleString() +
         ' outside legal range ' + (legalFloor ? legalFloor.toLocaleString() : '—') +
@@ -2006,9 +2017,13 @@
       var targetInfo = bestQuickFlipTarget(stable, rows);
       var netSale = targetInfo.netSale;
 
+      if (!targetInfo.rangeKnown) {
+        throw new Error('EA price range unavailable for this card');
+      }
+
       if (!targetInfo.floorPossible) {
         throw new Error(
-          'EA minimum ' + (targetInfo.priceFloor ? targetInfo.priceFloor.toLocaleString() : 'unknown') +
+          'EA price range ' + targetInfo.priceFloor.toLocaleString() + '–' + targetInfo.priceCeiling.toLocaleString() +
           ' leaves only ' + (targetInfo.maxPossibleProfit >= 0 ? '+' : '') +
           targetInfo.maxPossibleProfit.toLocaleString() +
           ' max profit; below floor +' + state.minProfit.toLocaleString()
@@ -2262,10 +2277,16 @@
         var targetInfo = bestQuickFlipTarget(stable, rows);
         var netSale = targetInfo.netSale;
 
+        if (!targetInfo.rangeKnown) {
+          log('SKIP · ' + seed.name + ' · EA PRICE RANGE unavailable');
+          await sleep(250);
+          continue;
+        }
+
         if (!targetInfo.floorPossible) {
           log(
             'SKIP · ' + seed.name +
-            ' · EA min ' + (targetInfo.priceFloor ? targetInfo.priceFloor.toLocaleString() : 'unknown') +
+            ' · price range ' + targetInfo.priceFloor.toLocaleString() + '–' + targetInfo.priceCeiling.toLocaleString() +
             ' · max possible profit ' + (targetInfo.maxPossibleProfit >= 0 ? '+' : '') + targetInfo.maxPossibleProfit.toLocaleString() +
             ' < floor +' + state.minProfit.toLocaleString()
           );
@@ -3121,7 +3142,7 @@
     var status = document.querySelector('#fcp-result-status');
     var player = document.querySelector('#fcp-result-player');
     var market = document.querySelector('#fcp-result-market');
-    var priceFloor = document.querySelector('#fcp-result-floor');
+    var priceRange = document.querySelector('#fcp-result-range');
     var maxBid = document.querySelector('#fcp-result-maxbid');
     var profit = document.querySelector('#fcp-result-profit');
     var scanMeta = document.querySelector('#fcp-result-meta');
@@ -3129,7 +3150,11 @@
     if (status) status.textContent = q.status || ('Ready to scan ' + quickFlipQualityLabel() + ' players');
     if (player) player.textContent = candidate ? (candidate.name + ' · ' + candidate.rating) : '—';
     if (market) market.textContent = candidate && candidate.stableBIN ? candidate.stableBIN.toLocaleString() : '—';
-    if (priceFloor) priceFloor.textContent = candidate && candidate.priceFloor ? candidate.priceFloor.toLocaleString() : '—';
+    if (priceRange) {
+      priceRange.textContent = candidate && candidate.priceFloor && candidate.priceCeiling
+        ? candidate.priceFloor.toLocaleString() + '–' + candidate.priceCeiling.toLocaleString()
+        : '—';
+    }
     if (maxBid) maxBid.textContent = candidate && candidate.maxBid ? candidate.maxBid.toLocaleString() : '—';
     if (profit) {
       if (candidate && Number.isFinite(candidate.expectedProfit)) {
@@ -3284,13 +3309,23 @@
     candidate.priceFloor = targetInfo.priceFloor;
     candidate.priceCeiling = targetInfo.priceCeiling;
 
+    if (!targetInfo.rangeKnown) {
+      candidate.maxBid = 0;
+      candidate.expectedProfit = 0;
+      state.quickFlip.status = 'Skip ' + candidate.name + ' · EA price range unavailable';
+      renderQuickFlip();
+      log('ROTATE · ' + candidate.name + ' · EA PRICE RANGE unavailable');
+      await scanQuickFlipPlayers({ rotate: true });
+      return;
+    }
+
     if (!targetInfo.floorPossible) {
       candidate.maxBid = 0;
       candidate.expectedProfit = targetInfo.maxPossibleProfit;
       candidate.currentEntryProfit = minBin ? targetInfo.netSale - minBin : 0;
       state.quickFlip.status =
         'Skip ' + candidate.name +
-        ' · EA min ' + (targetInfo.priceFloor ? targetInfo.priceFloor.toLocaleString() : 'unknown') +
+        ' · price range ' + targetInfo.priceFloor.toLocaleString() + '–' + targetInfo.priceCeiling.toLocaleString() +
         ' only allows ' + (targetInfo.maxPossibleProfit >= 0 ? '+' : '') + targetInfo.maxPossibleProfit.toLocaleString();
 
       renderQuickFlip();
@@ -3393,7 +3428,7 @@
         log(
           'MONITOR · ' + candidate.name +
           ' · market ' + stable.toLocaleString() +
-          ' · EA min ' + (targetInfo.priceFloor ? targetInfo.priceFloor.toLocaleString() : '—') +
+          ' · price range ' + targetInfo.priceFloor.toLocaleString() + '–' + targetInfo.priceCeiling.toLocaleString() +
           ' · target +' + activeProfitTarget.toLocaleString() +
           ' · max entry ' + maxEntry.toLocaleString() +
           ' · cheapest BIN ' + (minBin ? minBin.toLocaleString() : '—')
@@ -4388,7 +4423,7 @@
     root.innerHTML =
       '<div class="fcp-native-head">' +
         '<button id="fcp-close" type="button">‹</button>' +
-        '<div><b>FC+ Trader</b><small>v0.8.7 · FC+ Quick Flip</small></div>' +
+        '<div><b>FC+ Trader</b><small>v0.8.8 · FC+ Quick Flip</small></div>' +
         '<span id="fcp-headstate">DRY</span>' +
       '</div>' +
       '<div id="fcp-body" class="fcp-native-body">' +
@@ -4414,7 +4449,7 @@
           '<div class="fcp-result-grid">' +
             '<div class="fcp-result-player"><small>PLAYER</small><b id="fcp-result-player">—</b></div>' +
             '<div><small>MARKET</small><b id="fcp-result-market">—</b></div>' +
-            '<div><small>EA MIN</small><b id="fcp-result-floor">—</b></div>' +
+            '<div><small>PRICE RANGE</small><b id="fcp-result-range">—</b></div>' +
             '<div><small>MAX ENTRY</small><b id="fcp-result-maxbid">—</b></div>' +
             '<div><small>TARGET PROFIT</small><b id="fcp-result-profit">—</b></div>' +
           '</div>' +
