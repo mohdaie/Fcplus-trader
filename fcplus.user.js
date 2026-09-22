@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC+ Auto Trader Mobile
 // @namespace    https://fcplus.local/
-// @version      0.8.5
+// @version      0.8.6
 // @description  FC+ Quick Flip market scanner, SBC candidate bridge, auto trader, card pricing and diagnostics for the EA FC Web App.
 // @homepageURL  https://github.com/mohdaie/Fcplus-trader
 // @updateURL    https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var APP_ID = 'fcplus-auto-v085';
+  var APP_ID = 'fcplus-auto-v086';
   if (document.getElementById(APP_ID)) return;
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -3384,7 +3384,7 @@
     if (nextBid > maxBid) {
       log('Stop: next ' + nextBid.toLocaleString() + ' > max ' + maxBid.toLocaleString());
       if (!state.dryRun) {
-        history.back();
+        navigateEaBack('trader');
         await sleep(900);
       }
       return;
@@ -3501,7 +3501,7 @@
     state.lastBidPlaced = 0;
 
     await sleep(900);
-    history.back();
+    navigateEaBack('trader');
     await sleep(900);
   }
 
@@ -3908,6 +3908,180 @@
     root.style.removeProperty('pointer-events');
   }
 
+  var backGuardInstalled = false;
+  var backGuardBusy = false;
+  var backGuardStateKey = '__fcplusBackGuard086';
+
+  function fcPlusPanelOpen() {
+    var root = document.getElementById(APP_ID);
+    return !!(root && root.classList.contains('fcp-open'));
+  }
+
+  function eaNavigationController() {
+    var w = pageWindow();
+    var candidates = [];
+
+    try {
+      var controller = currentEaController();
+      if (controller) {
+        if (typeof controller.getNavigationController === 'function') {
+          candidates.push(controller.getNavigationController());
+        }
+        if (controller.rootController && typeof controller.rootController.getRootNavigationController === 'function') {
+          candidates.push(controller.rootController.getRootNavigationController());
+        }
+      }
+    } catch (e) {}
+
+    try {
+      if (typeof w.getCurrentViewController === 'function') {
+        var current = w.getCurrentViewController();
+        if (current) {
+          if (typeof current.getNavigationController === 'function') {
+            candidates.push(current.getNavigationController());
+          }
+          if (current.rootController && typeof current.rootController.getRootNavigationController === 'function') {
+            candidates.push(current.rootController.getRootNavigationController());
+          }
+        }
+      }
+    } catch (e) {}
+
+    try {
+      var app = w.getAppMain && w.getAppMain();
+      var root = app && app.getRootViewController && app.getRootViewController();
+      var presented = root && root.getPresentedViewController && root.getPresentedViewController();
+      var currentView = presented && presented.getCurrentViewController && presented.getCurrentViewController();
+      if (currentView) {
+        if (typeof currentView.getNavigationController === 'function') {
+          candidates.push(currentView.getNavigationController());
+        }
+        if (currentView.rootController && typeof currentView.rootController.getRootNavigationController === 'function') {
+          candidates.push(currentView.rootController.getRootNavigationController());
+        }
+      }
+    } catch (e) {}
+
+    for (var i = 0; i < candidates.length; i++) {
+      if (candidates[i] && typeof candidates[i].popViewController === 'function') return candidates[i];
+    }
+    return null;
+  }
+
+  function eaNavigationDepth(nav) {
+    if (!nav) return null;
+    var props = [
+      'viewControllers','_viewControllers','controllers','_controllers',
+      'stack','_stack','viewControllerStack','_viewControllerStack'
+    ];
+    for (var i = 0; i < props.length; i++) {
+      try {
+        var value = nav[props[i]];
+        if (Array.isArray(value)) return value.length;
+        if (value && typeof value.length === 'number') return Number(value.length);
+      } catch (e) {}
+    }
+    try {
+      if (typeof nav.getViewControllers === 'function') {
+        var list = nav.getViewControllers();
+        if (Array.isArray(list)) return list.length;
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  function visibleEaBackControl() {
+    var nodes = Array.from(document.querySelectorAll(
+      'button,a,[role="button"],[aria-label],[title],[class*="back"],[class*="Back"]'
+    )).filter(visible);
+
+    for (var i = 0; i < nodes.length; i++) {
+      if (nodes[i].closest && nodes[i].closest('#' + APP_ID)) continue;
+      var hint = lower(
+        (nodes[i].getAttribute && (nodes[i].getAttribute('aria-label') || '')) + ' ' +
+        (nodes[i].getAttribute && (nodes[i].getAttribute('title') || '')) + ' ' +
+        (nodes[i].className || '') + ' ' +
+        (nodes[i].textContent || '')
+      );
+      if (/(^|\s|[-_])back($|\s|[-_])/.test(hint) || hint === 'back') return nodes[i];
+    }
+    return null;
+  }
+
+  function navigateEaBack(reason) {
+    if (fcPlusPanelOpen()) {
+      closeNativePanel();
+      return true;
+    }
+
+    var nav = eaNavigationController();
+    var depth = eaNavigationDepth(nav);
+    var nativeBack = visibleEaBackControl();
+
+    // If EA exposes a native back control, prefer the same UI action the user
+    // would tap. It preserves controller-specific cleanup.
+    if (nativeBack) {
+      try {
+        clickLikeUser(nativeBack);
+        return true;
+      } catch (e) {}
+    }
+
+    // Fall back to EA's internal navigation controller. If the stack depth is
+    // known and already at root, do not pop out of the authenticated app.
+    if (nav && (depth === null || depth > 1)) {
+      try {
+        nav.popViewController();
+        return true;
+      } catch (e) {}
+    }
+
+    // Root screen: intentionally stay inside EA instead of letting Firefox
+    // navigate away to the login/previous browser page.
+    if (reason === 'gesture') {
+      var action = document.querySelector('#fcp-action');
+      if (action) action.textContent = 'Back · already at EA root';
+    }
+    return false;
+  }
+
+  function armBackGuard() {
+    if (backGuardInstalled) return;
+    backGuardInstalled = true;
+
+    try {
+      var base = Object.assign({}, history.state || {});
+      base[backGuardStateKey] = 'base';
+      history.replaceState(base, document.title, location.href);
+
+      var guard = Object.assign({}, base);
+      guard[backGuardStateKey] = 'guard';
+      history.pushState(guard, document.title, location.href);
+    } catch (e) {
+      backGuardInstalled = false;
+      return;
+    }
+
+    window.addEventListener('popstate', function () {
+      if (backGuardBusy) return;
+      backGuardBusy = true;
+
+      try {
+        // Restore a same-document guard immediately so Android/Firefox Back
+        // cannot leave the EA Web App and trigger a login/session restart.
+        var next = Object.assign({}, history.state || {});
+        next[backGuardStateKey] = 'guard';
+        history.pushState(next, document.title, location.href);
+      } catch (e) {}
+
+      try {
+        navigateEaBack('gesture');
+      } finally {
+        setTimeout(function () { backGuardBusy = false; }, 180);
+      }
+    }, true);
+  }
+
   function exactTextNode(label) {
     var nodes = Array.from(document.querySelectorAll('span,div,p,label,a,button'));
     var wanted = lower(label);
@@ -4057,6 +4231,7 @@
   }
 
   function nativeUiHeartbeat() {
+    armBackGuard();
     installNativeNav();
     installPlayerAction();
     installPlayerCardEnhancer();
@@ -4068,7 +4243,7 @@
     root.innerHTML =
       '<div class="fcp-native-head">' +
         '<button id="fcp-close" type="button">‹</button>' +
-        '<div><b>FC+ Trader</b><small>v0.8.5 · FC+ Quick Flip</small></div>' +
+        '<div><b>FC+ Trader</b><small>v0.8.6 · FC+ Quick Flip</small></div>' +
         '<span id="fcp-headstate">DRY</span>' +
       '</div>' +
       '<div id="fcp-body" class="fcp-native-body">' +
