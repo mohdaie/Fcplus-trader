@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC+ Auto Trader Mobile
 // @namespace    https://fcplus.local/
-// @version      0.4.2
+// @version      0.4.3
 // @description  Mobile FC Web App market scanner, auto bid/rebid, auto relist, and hard trading limits.
 // @homepageURL  https://github.com/mohdaie/Fcplus-trader
 // @updateURL    https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var APP_ID = 'fcplus-auto-v042';
+  var APP_ID = 'fcplus-auto-v043';
   if (document.getElementById(APP_ID)) return;
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -44,7 +44,8 @@
     undercutSteps: 1,
     maxScanPages: 40,
     scanPageDelayMs: 1200,
-    showAltPositions: true
+    showAltPositions: true,
+    showCardPrices: true
   };
 
   var stored = GM_getValue('fcplus_settings_v031', {}) || {};
@@ -100,7 +101,8 @@
       undercutSteps: state.undercutSteps,
       maxScanPages: state.maxScanPages,
       scanPageDelayMs: state.scanPageDelayMs,
-      showAltPositions: state.showAltPositions
+      showAltPositions: state.showAltPositions,
+      showCardPrices: state.showCardPrices
     });
   }
 
@@ -1291,6 +1293,7 @@
     state.autoBuyNow = checked('#fcp-autobin');
     state.autoSell = checked('#fcp-autosell');
     state.showAltPositions = checked('#fcp-altpositions');
+    state.showCardPrices = checked('#fcp-cardprices');
     state.minProfit = Math.max(0, val('#fcp-minprofit'));
     state.maxBidCap = Math.max(0, val('#fcp-bidcap'));
     state.maxBinBuy = Math.max(0, val('#fcp-maxbin'));
@@ -1634,19 +1637,130 @@
     return labels.slice(0, 6);
   }
 
-  function removeAltPositionStack(view) {
+  var cardPriceCache = {};
+  var cardPriceQueue = [];
+  var cardPriceBusy = 0;
+  var CARD_PRICE_TTL = 5 * 60 * 1000;
+
+  function compactPrice(value) {
+    var n = Number(value) || 0;
+    if (!n) return '—';
+    if (n >= 1000000) {
+      var m = n / 1000000;
+      return (m >= 10 ? Math.round(m) : Math.round(m * 10) / 10) + 'M';
+    }
+    if (n >= 1000) {
+      var k = n / 1000;
+      return (k >= 100 ? Math.round(k) : Math.round(k * 10) / 10) + 'K';
+    }
+    return n.toLocaleString();
+  }
+
+  function removeCardExtras(view) {
     try {
       if (view && view._fcplusAltPositions && view._fcplusAltPositions.parentNode) {
         view._fcplusAltPositions.parentNode.removeChild(view._fcplusAltPositions);
       }
-      if (view) view._fcplusAltPositions = null;
+      if (view && view._fcplusCardPrice && view._fcplusCardPrice.parentNode) {
+        view._fcplusCardPrice.parentNode.removeChild(view._fcplusCardPrice);
+      }
+      if (view) {
+        view._fcplusAltPositions = null;
+        view._fcplusCardPrice = null;
+      }
     } catch (e) {}
+  }
+
+  function cachedCardPrice(definitionId) {
+    var id = Number(definitionId) || 0;
+    var hit = cardPriceCache[id];
+    if (!hit) return 0;
+    if (Date.now() - hit.at > CARD_PRICE_TTL) {
+      delete cardPriceCache[id];
+      return 0;
+    }
+    return Number(hit.price) || 0;
+  }
+
+  function setCardPriceBadge(view, price, source) {
+    if (!view || !view._fcplusCardPrice) return;
+    var badge = view._fcplusCardPrice;
+    var n = Number(price) || 0;
+    badge.classList.toggle('fcplus-price-loading', !n);
+    badge.innerHTML = n
+      ? '<span class="fcplus-coin">●</span><b>' + compactPrice(n) + '</b>'
+      : '<span class="fcplus-price-dots">•••</span>';
+    badge.title = n
+      ? ('FC+ market price · ' + n.toLocaleString() + ' coins · ' + (source || 'market'))
+      : 'FC+ price loading';
+  }
+
+  function drainCardPriceQueue() {
+    while (cardPriceBusy < 2 && cardPriceQueue.length) {
+      var job = cardPriceQueue.shift();
+      if (!job) continue;
+
+      var id = Number(job.definitionId) || 0;
+      if (!id) {
+        job.resolve({ price: 0, source: 'none' });
+        continue;
+      }
+
+      cardPriceBusy++;
+      (async function (task) {
+        var price = 0;
+        var source = 'none';
+
+        try {
+          var fut = await futggCardPrice(task.definitionId);
+          if (fut && fut.ok) {
+            price = Number(fut.current || fut.salesMedian) || 0;
+            source = 'FUT.GG';
+          }
+        } catch (e) {}
+
+        // If FUT.GG is unavailable, use EA's card market-average field when available.
+        if (!price && task.fallbackPrice) {
+          price = Number(task.fallbackPrice) || 0;
+          source = 'EA avg';
+        }
+
+        cardPriceCache[task.definitionId] = {
+          price: price,
+          source: source,
+          at: Date.now()
+        };
+
+        task.resolve({ price: price, source: source });
+      })(job).finally(function () {
+        cardPriceBusy = Math.max(0, cardPriceBusy - 1);
+        setTimeout(drainCardPriceQueue, 180);
+      });
+    }
+  }
+
+  function requestCardPrice(definitionId, fallbackPrice) {
+    var id = Number(definitionId) || 0;
+    if (!id) return Promise.resolve({ price: Number(fallbackPrice) || 0, source: 'EA avg' });
+
+    var hit = cardPriceCache[id];
+    if (hit && Date.now() - hit.at <= CARD_PRICE_TTL) {
+      return Promise.resolve({ price: Number(hit.price) || 0, source: hit.source || 'cache' });
+    }
+
+    return new Promise(function (resolve) {
+      cardPriceQueue.push({
+        definitionId: id,
+        fallbackPrice: Number(fallbackPrice) || 0,
+        resolve: resolve
+      });
+      drainCardPriceQueue();
+    });
   }
 
   function decoratePlayerCard(view, player) {
     if (!view || !player) return;
-    removeAltPositionStack(view);
-    if (!state.showAltPositions) return;
+    removeCardExtras(view);
 
     var isPlayer = false;
     try {
@@ -1655,9 +1769,6 @@
       isPlayer = player.type === 'player';
     }
     if (!isPlayer) return;
-
-    var positions = alternatePositionLabels(player);
-    if (!positions.length) return;
 
     var root = view.__root || (typeof view.getRootElement === 'function' ? view.getRootElement() : null);
     if (!root || !root.parentElement) return;
@@ -1669,18 +1780,46 @@
       host.style.overflow = 'visible';
     } catch (e) {}
 
-    var stack = document.createElement('div');
-    stack.className = 'fcplus-alt-pos-stack';
-    stack.setAttribute('data-fcplus-defid', String(Number(player.definitionId) || 0));
+    if (state.showAltPositions) {
+      var positions = alternatePositionLabels(player);
+      if (positions.length) {
+        var stack = document.createElement('div');
+        stack.className = 'fcplus-alt-pos-stack';
+        stack.setAttribute('data-fcplus-defid', String(Number(player.definitionId) || 0));
 
-    positions.forEach(function (pos) {
-      var chip = document.createElement('span');
-      chip.textContent = pos;
-      stack.appendChild(chip);
-    });
+        positions.forEach(function (pos) {
+          var chip = document.createElement('span');
+          chip.textContent = pos;
+          stack.appendChild(chip);
+        });
 
-    host.appendChild(stack);
-    view._fcplusAltPositions = stack;
+        host.appendChild(stack);
+        view._fcplusAltPositions = stack;
+      }
+    }
+
+    if (state.showCardPrices) {
+      var badge = document.createElement('div');
+      badge.className = 'fcplus-card-price fcplus-price-loading';
+      badge.setAttribute('data-fcplus-defid', String(Number(player.definitionId) || 0));
+      badge.innerHTML = '<span class="fcplus-price-dots">•••</span>';
+      host.appendChild(badge);
+      view._fcplusCardPrice = badge;
+
+      var fallback = 0;
+      try { fallback = Number(player._marketAverage || player.marketAverage) || 0; } catch (e) {}
+
+      var cached = cachedCardPrice(player.definitionId);
+      if (cached) {
+        var cachedSource = cardPriceCache[Number(player.definitionId)] && cardPriceCache[Number(player.definitionId)].source;
+        setCardPriceBadge(view, cached, cachedSource || 'cache');
+      } else {
+        requestCardPrice(player.definitionId, fallback).then(function (result) {
+          if (!view || !view._fcplusCardPrice || !view._fcplusCardPrice.isConnected) return;
+          setCardPriceBadge(view, result.price, result.source);
+        });
+      }
+    }
   }
 
   function installPlayerCardEnhancer() {
@@ -1690,7 +1829,7 @@
     if (!Ctor || !Ctor.prototype || typeof Ctor.prototype.renderItem !== 'function') return false;
 
     var current = Ctor.prototype.renderItem;
-    if (current.__fcplusAltPositions042) return true;
+    if (current.__fcplusCardDecor043) return true;
 
     var wrapped = function (player, template) {
       var result = current.apply(this, arguments);
@@ -1702,9 +1841,9 @@
     };
 
     try {
-      Object.defineProperty(wrapped, '__fcplusAltPositions042', { value: true });
+      Object.defineProperty(wrapped, '__fcplusCardDecor043', { value: true });
     } catch (e) {
-      wrapped.__fcplusAltPositions042 = true;
+      wrapped.__fcplusCardDecor043 = true;
     }
 
     Ctor.prototype.renderItem = wrapped;
@@ -1712,14 +1851,11 @@
   }
 
   function refreshVisibleAltPositions() {
-    var w = pageWindow();
-    var Ctor;
-    try { Ctor = w.UTPlayerItemView; } catch (e) { Ctor = null; }
-    if (!Ctor) return;
-
-    // Existing cards will naturally refresh on EA renders. Toggling off removes all visible FC+ chips immediately.
     if (!state.showAltPositions) {
       Array.from(document.querySelectorAll('.fcplus-alt-pos-stack')).forEach(function (el) { el.remove(); });
+    }
+    if (!state.showCardPrices) {
+      Array.from(document.querySelectorAll('.fcplus-card-price')).forEach(function (el) { el.remove(); });
     }
   }
 
@@ -1902,7 +2038,7 @@
     root.innerHTML =
       '<div class="fcp-native-head">' +
         '<button id="fcp-close" type="button">‹</button>' +
-        '<div><b>FC+ Trader</b><small>v0.4.2 · card positions</small></div>' +
+        '<div><b>FC+ Trader</b><small>v0.4.3 · card price view</small></div>' +
         '<span id="fcp-headstate">DRY</span>' +
       '</div>' +
       '<div id="fcp-body" class="fcp-native-body">' +
@@ -1945,7 +2081,8 @@
         '<section class="fcp-section">' +
           '<h3>Player Cards</h3>' +
           '<div class="fcp-switches fcp-display-switches">' +
-            '<label><span><b>Alternate positions</b><small>Show every available position directly on player cards.</small></span><input id="fcp-altpositions" type="checkbox"' + (state.showAltPositions ? ' checked' : '') + '></label>' +
+            '<label><span><b>Alternate positions</b><small>FUTBIN-style position tabs attached to the right edge of each card.</small></span><input id="fcp-altpositions" type="checkbox"' + (state.showAltPositions ? ' checked' : '') + '></label>' +
+            '<label><span><b>Min BIN price</b><small>Show a compact market-price badge below every player card.</small></span><input id="fcp-cardprices" type="checkbox"' + (state.showCardPrices ? ' checked' : '') + '></label>' +
           '</div>' +
         '</section>' +
 
@@ -1994,7 +2131,7 @@
     Array.from(root.querySelectorAll('input')).forEach(function (input) {
       input.addEventListener('change', function () {
         if (!state.running) readUI();
-        if (input.id === 'fcp-altpositions') refreshVisibleAltPositions();
+        if (input.id === 'fcp-altpositions' || input.id === 'fcp-cardprices') refreshVisibleAltPositions();
         var hs = root.querySelector('#fcp-headstate');
         if (hs) hs.textContent = root.querySelector('#fcp-dry').checked ? 'DRY' : 'LIVE';
       });
@@ -2063,10 +2200,18 @@
     '#' + APP_ID + ' .fcp-display-switches label>span{display:flex;flex-direction:column;gap:3px}' +
     '#' + APP_ID + ' .fcp-display-switches label>span>b{font-size:14px;font-weight:600}' +
     '#' + APP_ID + ' .fcp-display-switches label>span>small{font-size:10px;line-height:1.3;color:#ffffff6f;max-width:230px}' +
-    '.fcplus-alt-pos-stack{position:absolute!important;right:-2px!important;top:12%!important;z-index:40!important;display:flex!important;flex-direction:column!important;gap:2px!important;pointer-events:none!important;filter:drop-shadow(0 1px 2px #0008)!important}' +
-    '.fcplus-alt-pos-stack span{display:flex!important;align-items:center!important;justify-content:center!important;min-width:25px!important;height:15px!important;padding:0 3px!important;border-radius:3px!important;background:rgba(239,235,214,.94)!important;color:#111!important;border:1px solid rgba(0,0,0,.22)!important;font:800 8px/1 system-ui,-apple-system,Segoe UI,sans-serif!important;letter-spacing:-.15px!important}' +
-    '.phone .fcplus-alt-pos-stack{right:-1px!important;top:10%!important;gap:1px!important}' +
-    '.phone .fcplus-alt-pos-stack span{min-width:22px!important;height:13px!important;padding:0 2px!important;font-size:7px!important}'
+    '.fcplus-alt-pos-stack{position:absolute!important;right:-10px!important;top:10%!important;z-index:45!important;display:flex!important;flex-direction:column!important;gap:0!important;pointer-events:none!important;filter:drop-shadow(0 1px 1px rgba(0,0,0,.42))!important}' +
+    '.fcplus-alt-pos-stack span{display:flex!important;align-items:center!important;justify-content:center!important;min-width:27px!important;height:17px!important;padding:0 4px!important;border-radius:0!important;background:#e9dfbd!important;color:#171512!important;border:1px solid #8e8469!important;border-left:0!important;font:800 8px/1 system-ui,-apple-system,Segoe UI,sans-serif!important;letter-spacing:-.12px!important;margin-top:-1px!important}' +
+    '.fcplus-alt-pos-stack span:first-child{border-radius:0 4px 0 0!important;margin-top:0!important}' +
+    '.fcplus-alt-pos-stack span:last-child{border-radius:0 0 4px 0!important}' +
+    '.phone .fcplus-alt-pos-stack{right:-8px!important;top:8%!important}' +
+    '.phone .fcplus-alt-pos-stack span{min-width:24px!important;height:15px!important;padding:0 3px!important;font-size:7px!important}' +
+
+    '.fcplus-card-price{position:absolute!important;left:50%!important;bottom:-16px!important;transform:translateX(-50%)!important;z-index:46!important;min-width:50px!important;height:17px!important;padding:0 7px!important;border-radius:5px!important;display:flex!important;align-items:center!important;justify-content:center!important;gap:4px!important;background:linear-gradient(180deg,#f2d54c,#d9b91f)!important;border:1px solid rgba(71,57,2,.68)!important;color:#171400!important;box-shadow:0 1px 2px #0007!important;white-space:nowrap!important;pointer-events:none!important;font:800 9px/1 system-ui,-apple-system,Segoe UI,sans-serif!important}' +
+    '.fcplus-card-price .fcplus-coin{font-size:8px!important;color:#725d00!important}' +
+    '.fcplus-card-price.fcplus-price-loading{background:rgba(16,27,39,.88)!important;border-color:rgba(255,255,255,.22)!important;color:#ffffff9c!important;min-width:42px!important}' +
+    '.fcplus-card-price .fcplus-price-dots{font-size:8px!important;letter-spacing:1px!important}' +
+    '.phone .fcplus-card-price{bottom:-14px!important;min-width:46px!important;height:15px!important;padding:0 6px!important;border-radius:4px!important;font-size:8px!important}'
   );
 
   function boot() {
