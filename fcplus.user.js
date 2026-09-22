@@ -2013,11 +2013,13 @@
 
     var cMin = document.querySelector('#fcp-cond-profit');
     var cBid = document.querySelector('#fcp-cond-bid');
+    var cBuy = document.querySelector('#fcp-cond-buy');
     var cRelist = document.querySelector('#fcp-cond-relist');
     var cMode = document.querySelector('#fcp-cond-mode');
     var cTrades = document.querySelector('#fcp-cond-trades');
     if (cMin) cMin.textContent = 'Profit ≥ ' + state.minProfit.toLocaleString();
     if (cBid) cBid.textContent = state.autoBid ? 'Auto bid / rebid' : 'Bid off';
+    if (cBuy) cBuy.textContent = state.autoBuyNow ? 'Auto Buy Now' : 'Buy Now off';
     if (cRelist) cRelist.textContent = state.autoSell ? 'Auto relist' : 'Relist off';
     if (cMode) cMode.textContent = state.dryRun ? 'Dry run' : 'Live';
     if (cTrades) cTrades.textContent = 'Max ' + state.maxTrades + ' trades';
@@ -2041,7 +2043,7 @@
     }
 
     if (trades) trades.textContent = state.trades + '/' + state.maxTrades;
-    if (profit) profit.textContent = state.daily.estimatedProfit.toLocaleString();
+    if (profit) profit.textContent = state.daily.realizedProfit.toLocaleString();
     var headState = document.querySelector('#fcp-headstate');
     var dry = document.querySelector('#fcp-dry');
     if (headState && dry) headState.textContent = dry.checked ? 'DRY' : 'LIVE';
@@ -2084,7 +2086,7 @@
       return true;
     }
 
-    if (state.dailyTarget > 0 && state.daily.estimatedProfit >= state.dailyTarget) {
+    if (state.dailyTarget > 0 && state.daily.realizedProfit >= state.dailyTarget) {
       stop('Daily profit target reached');
       return true;
     }
@@ -2105,6 +2107,11 @@
     if (!candidate || !candidate.definitionId) {
       log('AUTO · no Silver Quickflip candidate selected');
       return;
+    }
+
+    if (!state.dryRun && state.liveTrade) {
+      var handled = await processQuickFlipLiveTrade();
+      if (handled) return;
     }
 
     var rows = await eaDirectSearch(0, candidate.definitionId);
@@ -2218,6 +2225,10 @@
       price: decision ? decision.price : 0,
       auctionId: decision && decision.row ? decision.row.auctionId : ''
     };
+
+    if (!state.dryRun && decision && !state.liveTrade) {
+      await executeQuickFlipDecision(decision, candidate, stable, maxEntry);
+    }
   }
 
 
@@ -2453,7 +2464,7 @@
 
     try {
       var candidate = state.quickFlip && state.quickFlip.candidate;
-      if (state.dryRun && candidate && candidate.definitionId) {
+      if (candidate && candidate.definitionId) {
         await monitorQuickFlipCandidate();
       } else {
         var p = pageType();
@@ -2485,11 +2496,6 @@
       return;
     }
 
-    if (!state.dryRun) {
-      log('LIVE not enabled in v0.5.2 · exact candidate execution is the next step');
-      return;
-    }
-
     state.running = true;
     state.busy = false;
     state.trades = 0;
@@ -2512,7 +2518,7 @@
       ' · EA ID ' + candidate.definitionId +
       ' · max entry ' + (candidate.maxBid || 0).toLocaleString()
     );
-    log(state.dryRun ? 'AUTO started · DRY RUN · exact candidate monitor' : 'AUTO started · LIVE');
+    log(state.dryRun ? 'AUTO started · DRY RUN · exact candidate monitor' : 'AUTO started · LIVE · exact candidate trader');
     render();
     cycle();
   }
@@ -2970,7 +2976,7 @@
     root.innerHTML =
       '<div class="fcp-native-head">' +
         '<button id="fcp-close" type="button">‹</button>' +
-        '<div><b>FC+ Trader</b><small>v0.5.2 · Silver Quickflip</small></div>' +
+        '<div><b>FC+ Trader</b><small>v0.6.0 · Silver Quickflip</small></div>' +
         '<span id="fcp-headstate">DRY</span>' +
       '</div>' +
       '<div id="fcp-body" class="fcp-native-body">' +
@@ -3002,6 +3008,7 @@
             '<span>Silver only</span>' +
             '<span id="fcp-cond-profit">Profit ≥ ' + state.minProfit + '</span>' +
             '<span id="fcp-cond-bid">' + (state.autoBid ? 'Auto bid / rebid' : 'Bid off') + '</span>' +
+            '<span id="fcp-cond-buy">' + (state.autoBuyNow ? 'Auto Buy Now' : 'Buy Now off') + '</span>' +
             '<span id="fcp-cond-relist">' + (state.autoSell ? 'Auto relist' : 'Relist off') + '</span>' +
             '<span id="fcp-cond-mode">' + (state.dryRun ? 'Dry run' : 'Live') + '</span>' +
             '<span>List 1 hour</span>' +
@@ -3010,7 +3017,7 @@
         '</section>' +
 
         '<section class="fcp-section fcp-auto-card">' +
-          '<div class="fcp-profit"><span>Estimated listed profit today</span><b><span id="fcp-profit">' + state.daily.estimatedProfit.toLocaleString() + '</span> coins</b></div>' +
+          '<div class="fcp-profit"><span>Realized profit today</span><b><span id="fcp-profit">' + state.daily.realizedProfit.toLocaleString() + '</span> coins</b></div>' +
           '<div id="fcp-action">Ready · scan a player first</div>' +
           '<button id="fcp-start" class="fcp-start" data-on="0" type="button">AUTO TRADE</button>' +
         '</section>' +
