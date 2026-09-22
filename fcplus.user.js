@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC+ Auto Trader Mobile
 // @namespace    https://fcplus.local/
-// @version      0.3.2
+// @version      0.3.3
 // @description  Mobile FC Web App market scanner, auto bid/rebid, auto relist, and hard trading limits.
 // @homepageURL  https://github.com/mohdaie/Fcplus-trader
 // @updateURL    https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
@@ -17,7 +17,7 @@
 (function () {
   'use strict';
 
-  var APP_ID = 'fcplus-auto-v032';
+  var APP_ID = 'fcplus-auto-v033';
   if (document.getElementById(APP_ID)) return;
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -55,7 +55,8 @@
     currentTarget: null,
     lastWinKey: '',
     scanningAll: false,
-    market: { absMinBIN: 0, stableBIN: 0, minBid: 0, listings: 0, pages: 0, scannedAt: 0, fullScan: false },
+    fastScanning: false,
+    market: { absMinBIN: 0, stableBIN: 0, minBid: 0, listings: 0, pages: 0, probes: 0, scannedAt: 0, fullScan: false, fastScan: false },
     daily: dailyStored.date === today() ? dailyStored : { date: today(), estimatedProfit: 0, won: 0, listed: 0 }
   });
 
@@ -214,7 +215,9 @@
         listings: listings.length,
         pages: 1,
         scannedAt: Date.now(),
-        fullScan: false
+        fullScan: false,
+        fastScan: false,
+        probes: 0
       };
     }
 
@@ -256,10 +259,234 @@
       listings: allListings.length,
       pages: pages,
       scannedAt: Date.now(),
-      fullScan: true
+      fullScan: true,
+      fastScan: false,
+      probes: 0
     };
 
     renderMarket();
+  }
+
+  function waitUntil(test, timeoutMs) {
+    timeoutMs = timeoutMs || 6000;
+    return new Promise(function (resolve) {
+      var started = Date.now();
+      var timer = setInterval(function () {
+        var ok = false;
+        try { ok = !!test(); } catch (e) {}
+        if (ok) {
+          clearInterval(timer);
+          resolve(true);
+        } else if (Date.now() - started >= timeoutMs) {
+          clearInterval(timer);
+          resolve(false);
+        }
+      }, 150);
+    });
+  }
+
+  function findMaxBuyNowInput() {
+    var input = findInputNear(['max buy now', 'max. buy now', 'buy now max', 'maximum buy now']);
+    if (input) return input;
+
+    var inputs = Array.from(document.querySelectorAll('input')).filter(visible);
+    for (var i = 0; i < inputs.length; i++) {
+      var a = lower(
+        (inputs[i].getAttribute('aria-label') || '') + ' ' +
+        (inputs[i].getAttribute('placeholder') || '') + ' ' +
+        (inputs[i].name || '')
+      );
+      if (a.indexOf('buy') >= 0 && a.indexOf('max') >= 0) return inputs[i];
+    }
+    return null;
+  }
+
+  function noResultsVisible() {
+    var t = pageText();
+    return t.indexOf('no results') >= 0 ||
+      t.indexOf('no items found') >= 0 ||
+      t.indexOf('no auctions found') >= 0;
+  }
+
+  async function goBackToSearchForm() {
+    if (pageType() !== 'results' && findMaxBuyNowInput()) return true;
+    history.back();
+    return await waitUntil(function () {
+      return !!findMaxBuyNowInput() && !!findControl([/^Search$/i]);
+    }, 7000);
+  }
+
+  async function submitPriceProbe(maxPrice) {
+    var input = findMaxBuyNowInput();
+    var search = findControl([/^Search$/i]);
+
+    if (!input || !search) return { ok: false, hasResults: false, listings: [] };
+
+    setInput(input, maxPrice);
+    clickLikeUser(search);
+
+    var loaded = await waitUntil(function () {
+      return pageType() === 'results' || noResultsVisible();
+    }, 7000);
+
+    if (!loaded) return { ok: false, hasResults: false, listings: [] };
+
+    await sleep(250);
+    var listings = listingCards();
+
+    return {
+      ok: true,
+      hasResults: listings.length > 0,
+      listings: listings
+    };
+  }
+
+  function nextLegalAbove(price) {
+    var p = Math.max(150, Number(price) || 150);
+    return p + priceStep(p);
+  }
+
+  async function fastMinBinScan() {
+    if (state.running) {
+      log('Stop AUTO before Fast BIN scan');
+      return;
+    }
+    if (state.fastScanning || state.scanningAll) return;
+    if (pageType() !== 'results') {
+      log('Open Search Results first');
+      return;
+    }
+
+    var firstPage = listingCards();
+    if (!firstPage.length) {
+      log('No listings on current results page');
+      return;
+    }
+
+    var visibleBins = firstPage.map(function (x) { return x.buyNow; })
+      .filter(Boolean)
+      .sort(function (a, b) { return a - b; });
+
+    var high = visibleBins[0];
+    var initialStable = stableBIN(visibleBins);
+    var initialMinBid = firstPage.map(function (x) { return x.currentBid || x.startPrice; })
+      .filter(Boolean)
+      .sort(function (a, b) { return a - b; })[0] || 0;
+
+    if (!high) {
+      log('Could not establish starting BIN');
+      return;
+    }
+
+    state.fastScanning = true;
+    var fastBtn = document.querySelector('#fcp-fastbin');
+    var allBtn = document.querySelector('#fcp-scanall');
+    if (fastBtn) {
+      fastBtn.disabled = true;
+      fastBtn.textContent = 'PROBING…';
+    }
+    if (allBtn) allBtn.disabled = true;
+
+    var originalMax = '';
+    var probes = 0;
+    var low = 150;
+    var bestFound = high;
+
+    try {
+      log('Fast BIN: starting below ' + high.toLocaleString());
+
+      var formReady = await goBackToSearchForm();
+      if (!formReady) throw new Error('Max Buy Now search field not found');
+
+      var originalInput = findMaxBuyNowInput();
+      originalMax = originalInput ? originalInput.value : '';
+
+      while (low < high && probes < 14) {
+        var midpoint = Math.floor((low + high) / 2);
+        var mid = legalDown(midpoint);
+        if (mid < low) mid = low;
+        if (mid >= high) mid = legalDown(high - priceStep(high));
+        if (mid < low) break;
+
+        probes++;
+        log('Probe ' + probes + ': ≤ ' + mid.toLocaleString());
+
+        var result = await submitPriceProbe(mid);
+        if (!result.ok) throw new Error('Search did not load');
+
+        if (result.hasResults) {
+          var foundBins = result.listings.map(function (x) { return x.buyNow; })
+            .filter(Boolean)
+            .sort(function (a, b) { return a - b; });
+          var foundMin = foundBins[0] || mid;
+          bestFound = Math.min(bestFound, foundMin);
+          high = Math.min(mid, foundMin);
+
+          state.market.absMinBIN = bestFound;
+          state.market.stableBIN = initialStable;
+          state.market.minBid = initialMinBid;
+          state.market.listings = result.listings.length;
+          state.market.pages = 0;
+          state.market.probes = probes;
+          state.market.scannedAt = Date.now();
+          state.market.fullScan = false;
+          state.market.fastScan = true;
+          renderMarket();
+
+          if (low >= high) break;
+          if (!(await goBackToSearchForm())) throw new Error('Could not return to search form');
+        } else {
+          low = nextLegalAbove(mid);
+          if (low > high) low = high;
+          if (!(await goBackToSearchForm())) throw new Error('Could not return to search form');
+        }
+      }
+
+      // Validate at the best boundary and capture the actual cheapest returned listing.
+      var finalPrice = Math.max(low, Math.min(high, bestFound));
+      var finalResult = await submitPriceProbe(finalPrice);
+
+      if (finalResult.ok && finalResult.hasResults) {
+        var finalBins = finalResult.listings.map(function (x) { return x.buyNow; })
+          .filter(Boolean)
+          .sort(function (a, b) { return a - b; });
+        if (finalBins.length) bestFound = Math.min(bestFound, finalBins[0]);
+      }
+
+      state.market.absMinBIN = bestFound;
+      state.market.stableBIN = initialStable;
+      state.market.minBid = initialMinBid;
+      state.market.listings = firstPage.length;
+      state.market.pages = 0;
+      state.market.probes = probes + 1;
+      state.market.scannedAt = Date.now();
+      state.market.fullScan = false;
+      state.market.fastScan = true;
+      renderMarket();
+
+      log('FAST MIN BIN ' + bestFound.toLocaleString() + ' · ' + state.market.probes + ' probes');
+
+      // Restore the user's original Max Buy Now filter and original results.
+      if (await goBackToSearchForm()) {
+        var restoreInput = findMaxBuyNowInput();
+        var restoreSearch = findControl([/^Search$/i]);
+        if (restoreInput && restoreSearch) {
+          setInput(restoreInput, originalMax);
+          clickLikeUser(restoreSearch);
+          await waitUntil(function () { return pageType() === 'results' || noResultsVisible(); }, 7000);
+        }
+      }
+    } catch (e) {
+      log('Fast BIN error: ' + (e && e.message ? e.message : String(e)));
+    } finally {
+      state.fastScanning = false;
+      if (fastBtn) {
+        fastBtn.disabled = false;
+        fastBtn.textContent = 'FAST MIN BIN';
+      }
+      if (allBtn) allBtn.disabled = false;
+      render();
+    }
   }
 
   async function scanAllMarketPages() {
@@ -452,9 +679,11 @@
       max.textContent = m ? m.toLocaleString() : '—';
     }
     if (scanInfo) {
-      scanInfo.textContent = state.market.fullScan
-        ? ('Full market · ' + state.market.pages + ' pages · ' + state.market.listings + ' listings')
-        : (state.market.listings ? ('Current page · ' + state.market.listings + ' listings') : 'Not scanned');
+      scanInfo.textContent = state.market.fastScan
+        ? ('Fast BIN · ' + state.market.probes + ' price probes')
+        : state.market.fullScan
+          ? ('Full market · ' + state.market.pages + ' pages · ' + state.market.listings + ' listings')
+          : (state.market.listings ? ('Current page · ' + state.market.listings + ' listings') : 'Not scanned');
     }
   }
 
@@ -791,7 +1020,7 @@
     var root = document.createElement('section');
     root.id = APP_ID;
     root.innerHTML =
-      '<div class="fcp-head"><div><b>FC+ AUTO</b><small>v0.3.2 · full-market scan</small></div><button id="fcp-min" type="button">−</button></div>' +
+      '<div class="fcp-head"><div><b>FC+ AUTO</b><small>v0.3.3 · fast BIN scan</small></div><button id="fcp-min" type="button">−</button></div>' +
       '<div id="fcp-body">' +
         '<div class="fcp-top"><span id="fcp-state" data-on="0">STOPPED</span><span>Trades <b id="fcp-trades">0/' + state.maxTrades + '</b></span></div>' +
         '<div class="fcp-market">' +
@@ -801,9 +1030,13 @@
           '<div><small>MAX BID</small><b id="fcp-maxbid">—</b></div>' +
         '</div>' +
         '<div id="fcp-scaninfo" class="fcp-scaninfo">Not scanned</div>' +
+        '<div class="fcp-fastrow">' +
+          '<button id="fcp-fastbin" type="button">FAST MIN BIN</button>' +
+          '<button id="fcp-scanall" type="button">FULL PAGE SCAN</button>' +
+        '</div>' +
         '<div class="fcp-scanrow">' +
-          '<label>MAX SCAN PAGES<input id="fcp-maxscanpages" type="number" inputmode="numeric" min="1" max="100" value="' + state.maxScanPages + '"></label>' +
-          '<button id="fcp-scanall" type="button">SCAN ALL PAGES</button>' +
+          '<label>FULL SCAN PAGE CAP<input id="fcp-maxscanpages" type="number" inputmode="numeric" min="1" max="100" value="' + state.maxScanPages + '"></label>' +
+          '<span>Fast BIN uses price probing instead of scrolling every page.</span>' +
         '</div>' +
         '<div class="fcp-grid three">' +
           '<label>MIN PROFIT<input id="fcp-minprofit" type="number" inputmode="numeric" value="' + state.minProfit + '"></label>' +
@@ -832,6 +1065,11 @@
 
     root.querySelector('#fcp-start').addEventListener('click', function () {
       if (state.running) stop('Stopped by user'); else start();
+    });
+
+    root.querySelector('#fcp-fastbin').addEventListener('click', function () {
+      readUI();
+      fastMinBinScan();
     });
 
     root.querySelector('#fcp-scanall').addEventListener('click', function () {
@@ -872,9 +1110,13 @@
     '#' + APP_ID + ' .fcp-market small{display:block;color:#ffffff65;font-size:8px}' +
     '#' + APP_ID + ' .fcp-market b{display:block;margin-top:2px;font-size:13px;overflow:hidden;text-overflow:ellipsis}' +
     '#' + APP_ID + ' .fcp-scaninfo{padding:6px 8px;border-radius:8px;background:#ffffff07;color:#ffffff72;font-size:9px}' +
-    '#' + APP_ID + ' .fcp-scanrow{display:grid;grid-template-columns:1fr 1.5fr;gap:7px;align-items:end;margin-top:7px}' +
-    '#' + APP_ID + ' #fcp-scanall{height:35px;border:0;border-radius:8px;background:#d9e4ec;color:#0b1014;font-size:10px;font-weight:900}' +
-    '#' + APP_ID + ' #fcp-scanall:disabled{opacity:.55}' +
+    '#' + APP_ID + ' .fcp-fastrow{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:7px}' +
+    '#' + APP_ID + ' .fcp-fastrow button{height:37px;border:0;border-radius:8px;font-size:10px;font-weight:900}' +
+    '#' + APP_ID + ' #fcp-fastbin{background:#00ef88;color:#03120b}' +
+    '#' + APP_ID + ' #fcp-scanall{background:#d9e4ec;color:#0b1014}' +
+    '#' + APP_ID + ' .fcp-fastrow button:disabled{opacity:.55}' +
+    '#' + APP_ID + ' .fcp-scanrow{display:grid;grid-template-columns:1fr 1.35fr;gap:7px;align-items:end;margin-top:7px}' +
+    '#' + APP_ID + ' .fcp-scanrow span{font-size:8px;line-height:1.35;color:#ffffff65;padding-bottom:4px}' +
     '#' + APP_ID + ' .fcp-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:8px}' +
     '#' + APP_ID + ' .fcp-grid.three{grid-template-columns:1fr 1fr 1fr}' +
     '#' + APP_ID + ' label{font-size:8px;color:#ffffff75;min-width:0}' +
