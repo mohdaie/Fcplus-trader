@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC+ Auto Trader Mobile
 // @namespace    https://fcplus.local/
-// @version      0.6.0
+// @version      0.6.1
 // @description  FC+ Silver Quickflip market scanner, auto trader, card pricing and diagnostics for the EA FC Web App.
 // @homepageURL  https://github.com/mohdaie/Fcplus-trader
 // @updateURL    https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var APP_ID = 'fcplus-auto-v060';
+  var APP_ID = 'fcplus-auto-v061';
   if (document.getElementById(APP_ID)) return;
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -63,6 +63,7 @@
     fastScanning: false,
     smartScanning: false,
     silverScanning: false,
+    quickFlipRotateMs: 75000,
     quickFlip: {
       candidate: null,
       scannedAt: 0,
@@ -1070,19 +1071,20 @@
   }
 
 
-  async function scanSilverQuickFlipPlayers() {
+  async function scanSilverQuickFlipPlayers(options) {
+    options = options || {};
     if (state.silverScanning) return;
-    if (state.running) {
+    if (state.running && !options.rotate) {
       log('Stop Auto Trade before scanning a new Silver Quickflip candidate');
       return;
     }
 
-    readUI();
+    if (!state.running) readUI();
     state.silverScanning = true;
-    state.quickFlip.status = 'Scanning EA silver market…';
+    state.quickFlip.status = options.rotate ? 'Rotating candidate · scanning silver market…' : 'Scanning EA silver market…';
     state.quickFlip.candidate = null;
     renderQuickFlip();
-    log('SCAN · Silver Quickflip · searching EA silver market');
+    log((options.rotate ? 'ROTATE · ' : 'SCAN · ') + 'Silver Quickflip · searching EA silver market');
 
     var scanButton = document.querySelector('#fcp-scanplayer');
     if (scanButton) {
@@ -1171,12 +1173,14 @@
           : Math.min(minBin || Infinity, minBid || Infinity);
         if (!Number.isFinite(entryPrice)) entryPrice = 0;
 
-        var expectedProfit = entryPrice ? netSale - entryPrice : 0;
+        var currentEntryProfit = entryPrice ? netSale - entryPrice : 0;
+        var expectedProfit = maxBid ? netSale - maxBid : 0;
         var spread = stable && minBin ? Math.max(0, stable - minBin) : 0;
         var score = (immediate ? 100000 : 0) +
           seed.sightings * 500 +
           rows.length * 50 +
-          Math.max(0, expectedProfit) * 3 -
+          Math.max(0, expectedProfit) * 8 +
+          Math.max(0, currentEntryProfit) * 2 -
           spread;
 
         evaluated.push({
@@ -1191,6 +1195,7 @@
           maxBid: maxBid,
           netSale: netSale,
           expectedProfit: expectedProfit,
+          currentEntryProfit: currentEntryProfit,
           immediate: !!immediate,
           score: score
         });
@@ -1209,7 +1214,7 @@
       state.quickFlip.scannedAt = Date.now();
       state.quickFlip.status = best.immediate
         ? 'Opportunity found'
-        : 'Best liquid silver found · waiting for cheaper entry';
+        : 'Best liquid silver found · waiting up to 75s for entry';
 
       state.market = {
         absMinBIN: best.minBin,
@@ -1236,7 +1241,7 @@
         'FOUND · ' + best.name + ' ' + best.rating +
         ' · market ' + best.stableBIN.toLocaleString() +
         ' · max bid ' + best.maxBid.toLocaleString() +
-        ' · est ' + (best.expectedProfit >= 0 ? '+' : '') + best.expectedProfit.toLocaleString()
+        ' · target profit ' + (best.expectedProfit >= 0 ? '+' : '') + best.expectedProfit.toLocaleString()
       );
     } catch (e) {
       state.quickFlip.status = 'Scan failed · ' + (e && e.message ? e.message : String(e));
@@ -2176,10 +2181,12 @@
     }
 
     if (decision) {
-      candidate.expectedProfit = Math.floor(stable * 0.95) - decision.price;
+      candidate.currentEntryProfit = Math.floor(stable * 0.95) - decision.price;
+      candidate.expectedProfit = Math.floor(stable * 0.95) - maxEntry;
       state.quickFlip.status = 'Monitoring ' + candidate.name + ' · entry found';
     } else {
-      candidate.expectedProfit = minBin ? Math.floor(stable * 0.95) - minBin : 0;
+      candidate.currentEntryProfit = minBin ? Math.floor(stable * 0.95) - minBin : 0;
+      candidate.expectedProfit = Math.floor(stable * 0.95) - maxEntry;
       state.quickFlip.status = 'Monitoring ' + candidate.name + ' · waiting for entry ≤ ' + maxEntry.toLocaleString();
     }
 
@@ -2212,6 +2219,13 @@
           ' · cheapest BIN ' + (minBin ? minBin.toLocaleString() : '—')
         );
       }
+    }
+
+    if (!decision && !state.liveTrade && state.quickFlip.scannedAt &&
+        Date.now() - state.quickFlip.scannedAt >= state.quickFlipRotateMs) {
+      log('ROTATE · ' + candidate.name + ' · no qualifying entry after 75s');
+      await scanSilverQuickFlipPlayers({ rotate: true });
+      return;
     }
 
     state.currentTarget = {
@@ -2976,7 +2990,7 @@
     root.innerHTML =
       '<div class="fcp-native-head">' +
         '<button id="fcp-close" type="button">‹</button>' +
-        '<div><b>FC+ Trader</b><small>v0.6.0 · Silver Quickflip</small></div>' +
+        '<div><b>FC+ Trader</b><small>v0.6.1 · Silver Quickflip</small></div>' +
         '<span id="fcp-headstate">DRY</span>' +
       '</div>' +
       '<div id="fcp-body" class="fcp-native-body">' +
@@ -2997,7 +3011,7 @@
             '<div class="fcp-result-player"><small>PLAYER</small><b id="fcp-result-player">—</b></div>' +
             '<div><small>MARKET</small><b id="fcp-result-market">—</b></div>' +
             '<div><small>MAX BID</small><b id="fcp-result-maxbid">—</b></div>' +
-            '<div><small>EST. PROFIT</small><b id="fcp-result-profit">—</b></div>' +
+            '<div><small>PROFIT @ MAX ENTRY</small><b id="fcp-result-profit">—</b></div>' +
           '</div>' +
           '<div id="fcp-result-meta" class="fcp-result-meta">No scan yet</div>' +
         '</section>' +
