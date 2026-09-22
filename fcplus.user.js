@@ -1863,20 +1863,23 @@
   }
 
 
-  async function scanSilverQuickFlipPlayers(options) {
+  async function scanQuickFlipPlayers(options) {
     options = options || {};
     if (state.silverScanning) return;
     if (state.running && !options.rotate) {
-      log('Stop Auto Trade before scanning a new Silver Quickflip candidate');
+      log('Stop Auto Trade before scanning a new FC+ Quick Flip candidate');
       return;
     }
 
     if (!state.running) readUI();
+    var qualityLabel = quickFlipQualityLabel();
     state.silverScanning = true;
-    state.quickFlip.status = options.rotate ? 'Rotating candidate · scanning silver market…' : 'Scanning EA silver market…';
+    state.quickFlip.status = options.rotate
+      ? 'Rotating candidate · scanning ' + qualityLabel + ' market…'
+      : 'Scanning EA ' + qualityLabel + ' market…';
     state.quickFlip.candidate = null;
     renderQuickFlip();
-    log((options.rotate ? 'ROTATE · ' : 'SCAN · ') + 'Silver Quickflip · searching EA silver market');
+    log((options.rotate ? 'ROTATE · ' : 'SCAN · ') + 'FC+ Quick Flip · ' + qualityLabel + ' market');
 
     var scanButton = document.querySelector('#fcp-scanplayer');
     if (scanButton) {
@@ -1885,14 +1888,16 @@
     }
 
     try {
-      var criteria = criteriaForSilverQuickFlip();
-      if (!criteria) throw new Error('EA silver search is not available on this screen yet');
+      var criteria = criteriaForQuickFlip();
+      if (!criteria) throw new Error('EA Quick Flip search is not available on this screen yet');
 
       var broadRows = [];
       for (var page = 1; page <= 3; page++) {
-        log('SCAN · Silver market page ' + page + '/3');
+        log('SCAN · ' + qualityLabel + ' market page ' + page + '/3');
         var pageRows = await eaSearchWithCriteria(criteria, page);
-        broadRows = broadRows.concat(pageRows);
+        broadRows = broadRows.concat(pageRows.filter(function (row) {
+          return matchesQuickFlipQuality(row, state.quickFlipQuality);
+        }));
         if (page < 3) await sleep(550);
       }
 
@@ -1926,7 +1931,7 @@
       state.quickFlip.checkedPlayers = 0;
       renderQuickFlip();
 
-      if (!seeds.length) throw new Error('No silver players were returned by EA');
+      if (!seeds.length) throw new Error('No ' + qualityLabel + ' players were returned by EA');
 
       var evaluated = [];
       for (var i = 0; i < seeds.length; i++) {
@@ -2000,13 +2005,13 @@
       });
 
       var best = evaluated[0];
-      if (!best) throw new Error('No silver player had enough live listings to price safely');
+      if (!best) throw new Error('No ' + qualityLabel + ' player had enough live listings to price safely');
 
       state.quickFlip.candidate = best;
       state.quickFlip.scannedAt = Date.now();
       state.quickFlip.status = best.immediate
         ? 'Opportunity found'
-        : 'Best liquid silver found · waiting up to 75s for entry';
+        : 'Best liquid ' + qualityLabel + ' found · waiting up to 75s for entry';
 
       state.market = {
         absMinBIN: best.minBin,
@@ -2023,14 +2028,14 @@
         futggPrice: 0,
         futggSalesMedian: 0,
         futggStatus: 'not checked',
-        priceSource: 'EA SILVER SCAN',
+        priceSource: 'EA ' + qualityLabel.toUpperCase() + ' QUICK FLIP',
         confidence: best.sample >= 8 ? 'HIGH' : 'MEDIUM'
       };
 
       renderMarket();
       renderQuickFlip();
       log(
-        'FOUND · ' + best.name + ' ' + best.rating +
+        'FOUND · ' + qualityLabel + ' · ' + best.name + ' ' + best.rating +
         ' · market ' + best.stableBIN.toLocaleString() +
         ' · max bid ' + best.maxBid.toLocaleString() +
         ' · target profit ' + (best.expectedProfit >= 0 ? '+' : '') + best.expectedProfit.toLocaleString()
@@ -3022,7 +3027,7 @@
     if (!decision && !state.liveTrade && state.quickFlip.scannedAt &&
         Date.now() - state.quickFlip.scannedAt >= state.quickFlipRotateMs) {
       log('ROTATE · ' + candidate.name + ' · no qualifying entry after 75s');
-      await scanSilverQuickFlipPlayers({ rotate: true });
+      await scanQuickFlipPlayers({ rotate: true });
       return;
     }
 
@@ -3926,7 +3931,7 @@
     root.querySelector('#fcp-close').addEventListener('click', closeNativePanel);
 
     root.querySelector('#fcp-scanplayer').addEventListener('click', function () {
-      scanSilverQuickFlipPlayers();
+      scanQuickFlipPlayers();
     });
 
     root.querySelector('#fcp-start').addEventListener('click', function () {
