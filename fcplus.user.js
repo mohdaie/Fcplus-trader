@@ -4332,18 +4332,19 @@
     '#' + APP_ID + ' .fcp-display-switches label>span{display:flex;flex-direction:column;gap:3px}' +
     '#' + APP_ID + ' .fcp-display-switches label>span>b{font-size:14px;font-weight:600}' +
     '#' + APP_ID + ' .fcp-display-switches label>span>small{font-size:10px;line-height:1.3;color:#ffffff6f;max-width:230px}' +
-    '.fcplus-alt-pos-stack{position:absolute!important;right:-10px!important;top:10%!important;z-index:45!important;display:flex!important;flex-direction:column!important;gap:0!important;pointer-events:none!important;filter:drop-shadow(0 1px 1px rgba(0,0,0,.42))!important}' +
-    '.fcplus-alt-pos-stack span{display:flex!important;align-items:center!important;justify-content:center!important;min-width:27px!important;height:17px!important;padding:0 4px!important;border-radius:0!important;background:#e9dfbd!important;color:#171512!important;border:1px solid #8e8469!important;border-left:0!important;font:800 8px/1 system-ui,-apple-system,Segoe UI,sans-serif!important;letter-spacing:-.12px!important;margin-top:-1px!important}' +
-    '.fcplus-alt-pos-stack span:first-child{border-radius:0 4px 0 0!important;margin-top:0!important}' +
-    '.fcplus-alt-pos-stack span:last-child{border-radius:0 0 4px 0!important}' +
-    '.phone .fcplus-alt-pos-stack{right:-8px!important;top:8%!important}' +
-    '.phone .fcplus-alt-pos-stack span{min-width:24px!important;height:15px!important;padding:0 3px!important;font-size:7px!important}' +
+    '.fcplus-card-host{overflow:visible!important}' +
+    '.fcplus-alt-pos-stack{position:absolute!important;right:-5px!important;top:7px!important;z-index:45!important;display:flex!important;flex-direction:column!important;gap:2px!important;pointer-events:none!important;filter:drop-shadow(0 1px 2px rgba(0,0,0,.38))!important}' +
+    '.fcplus-alt-pos-stack span{display:flex!important;align-items:center!important;justify-content:center!important;min-width:25px!important;height:16px!important;padding:0 4px!important;border-radius:4px!important;background:rgba(18,26,36,.90)!important;color:#f6f0d5!important;border:1px solid rgba(239,224,169,.72)!important;font:800 8px/1 system-ui,-apple-system,Segoe UI,sans-serif!important;letter-spacing:-.1px!important;box-shadow:inset 2px 0 0 rgba(239,224,169,.75)!important}' +
+    '.phone .fcplus-alt-pos-stack{right:-4px!important;top:6px!important}' +
+    '.phone .fcplus-alt-pos-stack span{min-width:23px!important;height:15px!important;padding:0 3px!important;font-size:7px!important}' +
 
-    '.fcplus-card-price{position:absolute!important;left:50%!important;bottom:-16px!important;transform:translateX(-50%)!important;z-index:46!important;min-width:50px!important;height:17px!important;padding:0 7px!important;border-radius:5px!important;display:flex!important;align-items:center!important;justify-content:center!important;gap:4px!important;background:linear-gradient(180deg,#f2d54c,#d9b91f)!important;border:1px solid rgba(71,57,2,.68)!important;color:#171400!important;box-shadow:0 1px 2px #0007!important;white-space:nowrap!important;pointer-events:none!important;font:800 9px/1 system-ui,-apple-system,Segoe UI,sans-serif!important}' +
-    '.fcplus-card-price .fcplus-coin{font-size:8px!important;color:#725d00!important}' +
-    '.fcplus-card-price.fcplus-price-loading{background:rgba(16,27,39,.88)!important;border-color:rgba(255,255,255,.22)!important;color:#ffffff9c!important;min-width:42px!important}' +
+    '.fcplus-card-price{position:absolute!important;left:50%!important;bottom:-18px!important;transform:translateX(-50%)!important;z-index:46!important;min-width:74px!important;height:20px!important;padding:0 6px!important;border-radius:6px!important;display:flex!important;align-items:center!important;justify-content:center!important;gap:3px!important;background:rgba(13,22,31,.94)!important;border:1px solid rgba(242,213,76,.70)!important;color:#fff!important;box-shadow:0 2px 5px rgba(0,0,0,.45)!important;white-space:nowrap!important;pointer-events:none!important;font:800 9px/1 system-ui,-apple-system,Segoe UI,sans-serif!important}' +
+    '.fcplus-card-price small{font:800 6px/1 system-ui,-apple-system,Segoe UI,sans-serif!important;letter-spacing:.04em!important;color:rgba(255,255,255,.58)!important}' +
+    '.fcplus-card-price b{font:900 9px/1 system-ui,-apple-system,Segoe UI,sans-serif!important;color:#ffe26b!important}' +
+    '.fcplus-card-price .fcplus-coin{font-size:7px!important;color:#f2d54c!important}' +
+    '.fcplus-card-price.fcplus-price-loading{border-color:rgba(255,255,255,.22)!important;color:#ffffff9c!important}' +
     '.fcplus-card-price .fcplus-price-dots{font-size:8px!important;letter-spacing:1px!important}' +
-    '.phone .fcplus-card-price{bottom:-14px!important;min-width:46px!important;height:15px!important;padding:0 6px!important;border-radius:4px!important;font-size:8px!important}'
+    '.phone .fcplus-card-price{bottom:-17px!important;min-width:70px!important;height:19px!important;padding:0 5px!important;border-radius:5px!important;font-size:8px!important}'
   );
 
 
