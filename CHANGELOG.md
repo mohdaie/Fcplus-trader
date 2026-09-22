@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0
+
+- Rebuilt FC+ as an **integrated EA Web App UI** instead of a floating overlay.
+- Added an **FC+ bottom navigation item** alongside the Web App tabs.
+- Added a full-screen native-styled **FC+ Trader** page for market tools, settings, limits, logs, and start/stop controls.
+- Added **FC+ Smart Price** as an action on supported Player Details / Item Details views.
+- Existing trading logic continues to run while the FC+ page is hidden.
+- Smart Price can also run from a market item-detail screen when the active EA search context is available.
+- The old floating FC+ card is removed from normal browsing.
+
 ## 0.3.5
 
 - Fixed **EA Fast BIN** and **Smart Price** unexpectedly leaving the FC Web App.
