@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC+ Auto Trader Mobile
 // @namespace    https://fcplus.local/
-// @version      0.8.1
+// @version      0.8.2
 // @description  FC+ Quick Flip market scanner, SBC candidate bridge, auto trader, card pricing and diagnostics for the EA FC Web App.
 // @homepageURL  https://github.com/mohdaie/Fcplus-trader
 // @updateURL    https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var APP_ID = 'fcplus-auto-v081';
+  var APP_ID = 'fcplus-auto-v082';
   if (document.getElementById(APP_ID)) return;
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -963,6 +963,33 @@
 
     state.liveBusy = true;
     try {
+      if (trade.status === 'buying' || trade.status === 'submitting_bin') {
+        var pendingWatched = await requestWatchedItemsDirect();
+        var pendingWon = pendingWatched.find(function (item) {
+          return sameTrackedItem(item, trade) && auctionIsWon(item);
+        }) || null;
+
+        if (pendingWon) {
+          trade.buyPrice = Number(eaAuction(pendingWon) && (eaAuction(pendingWon).currentBid || eaAuction(pendingWon).buyNowPrice)) || trade.buyPrice;
+          trade.itemId = eaItemId(pendingWon) || trade.itemId || '';
+          trade.status = 'won';
+          state.daily.won++;
+          saveDaily();
+          log('RECOVERED BUY · ' + trade.name + ' @ ' + Number(trade.buyPrice || 0).toLocaleString());
+          await listWonQuickFlipItem(pendingWon, trade);
+          return true;
+        }
+
+        if (Date.now() - Number(trade.startedAt || 0) > 15000) {
+          log('BUY NOT CONFIRMED · clearing pending state so FC+ can retry a fresh listing');
+          state.liveTrade = null;
+          return true;
+        }
+
+        log('BUY PENDING · waiting for EA confirmation');
+        return true;
+      }
+
       if (trade.status === 'bid') {
         var watched = await requestWatchedItemsDirect();
         var bidItem = watched.find(function (item) { return sameTrackedItem(item, trade); });
@@ -1063,12 +1090,14 @@
 
   async function executeQuickFlipDecision(decision, candidate, stable, maxEntry) {
     if (!decision || !decision.row || !decision.row.rawItem) {
-      throw new Error('Exact EA item is unavailable for live execution');
+      log('LIVE BLOCKED · exact EA item is unavailable for this listing');
+      return;
     }
 
     var price = Number(decision.price) || 0;
     if (!price || price > maxEntry) {
-      throw new Error('Entry price is outside the current max entry');
+      log('LIVE BLOCKED · entry ' + price.toLocaleString() + ' is above max ' + maxEntry.toLocaleString());
+      return;
     }
 
     var trade = {
@@ -1082,25 +1111,59 @@
       market: stable,
       maxEntry: maxEntry,
       startedAt: Date.now(),
-      status: decision.type === 'BIN' ? 'buying' : 'bid'
+      status: decision.type === 'BIN' ? 'submitting_bin' : 'submitting_bid'
     };
 
     state.liveTrade = trade;
-    log(decision.type + ' · submitting ' + candidate.name + ' @ ' + price.toLocaleString());
+    log(decision.type + ' SUBMIT · ' + candidate.name + ' @ ' + price.toLocaleString());
 
-    var response = await directEaBid(decision.row.rawItem, price);
+    var response;
+    try {
+      response = await directEaBid(decision.row.rawItem, price);
+    } catch (e) {
+      log(decision.type + ' ERROR · ' + (e && e.message ? e.message : String(e)));
+
+      if (decision.type === 'BIN') {
+        try {
+          var watchedAfterError = await requestWatchedItemsDirect();
+          var recovered = watchedAfterError.find(function (item) {
+            return sameTrackedItem(item, trade) && auctionIsWon(item);
+          }) || null;
+
+          if (recovered) {
+            trade.itemId = eaItemId(recovered) || trade.itemId || '';
+            trade.status = 'won';
+            state.daily.won++;
+            saveDaily();
+            log('RECOVERED BUY · ' + candidate.name + ' @ ' + price.toLocaleString());
+            await listWonQuickFlipItem(recovered, trade);
+            return;
+          }
+        } catch (ignore) {}
+      }
+
+      state.liveTrade = null;
+      log(decision.type + ' FAILED · no EA confirmation; waiting for a fresh listing');
+      return;
+    }
 
     if (decision.type === 'BIN') {
       var owned = ownedItemFromResponse(response, null);
+
       if (!owned) {
-        trade.status = 'won';
-        log('BOUGHT · ' + candidate.name + ' @ ' + price.toLocaleString() + ' · waiting to locate owned card');
-        var watched = await requestWatchedItemsDirect();
-        owned = watched.find(function (item) { return sameTrackedItem(item, trade) && auctionIsWon(item); }) || null;
+        try {
+          var watched = await requestWatchedItemsDirect();
+          owned = watched.find(function (item) {
+            return sameTrackedItem(item, trade) && auctionIsWon(item);
+          }) || null;
+        } catch (e) {}
       }
 
       if (!owned) {
-        throw new Error('Bought card could not be located for listing');
+        trade.status = 'buying';
+        trade.startedAt = Date.now();
+        log('BUY ACK · EA accepted request; waiting for owned-card confirmation');
+        return;
       }
 
       trade.itemId = eaItemId(owned) || trade.itemId;
@@ -1112,10 +1175,9 @@
       await listWonQuickFlipItem(owned, trade);
     } else {
       trade.status = 'bid';
-      log('BID · placed ' + candidate.name + ' @ ' + price.toLocaleString());
+      log('BID PLACED · ' + candidate.name + ' @ ' + price.toLocaleString());
     }
   }
-
 
 
   function safeArray(value) {
@@ -3505,6 +3567,9 @@
       ' · EA ID ' + candidate.definitionId +
       ' · max entry ' + (candidate.maxBid || 0).toLocaleString()
     );
+    if (!state.dryRun && state.liveTrade) {
+      log('LIVE RESUME · reconciling pending ' + String(state.liveTrade.status || 'trade') + ' state first');
+    }
     log(state.dryRun ? 'AUTO started · DRY RUN · exact candidate monitor' : 'AUTO started · LIVE · exact candidate trader');
     render();
     cycle();
@@ -3963,7 +4028,7 @@
     root.innerHTML =
       '<div class="fcp-native-head">' +
         '<button id="fcp-close" type="button">‹</button>' +
-        '<div><b>FC+ Trader</b><small>v0.8.1 · FC+ Quick Flip</small></div>' +
+        '<div><b>FC+ Trader</b><small>v0.8.2 · FC+ Quick Flip</small></div>' +
         '<span id="fcp-headstate">DRY</span>' +
       '</div>' +
       '<div id="fcp-body" class="fcp-native-body">' +
