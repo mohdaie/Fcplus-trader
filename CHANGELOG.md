@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.1
+
+- Fixed the new FC+ bottom-nav button not responding on mobile.
+- Added capture-phase pointer/click/touch delegation so EA UI re-renders no longer strip FC+ interactions.
+- Fixed **FC+ Smart Price** on Player Details pages.
+- Added player definition-ID discovery from the current EA controller/item context.
+- Smart Price can now build a direct EA player market search even when no transfer-search screen is currently open.
+- If EA live validation is unavailable but FUT.GG returns a price, FC+ can still show a FUT.GG-only reference instead of failing.
+- Improved mobile button hit-testing and Smart Price row formatting.
+
 ## 0.4.0
 
 - Rebuilt FC+ as an **integrated EA Web App UI** instead of a floating overlay.
