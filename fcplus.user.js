@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         FC+ Auto Trader Mobile
 // @namespace    https://fcplus.local/
-// @version      0.7.1
-// @description  FC+ Silver Quickflip market scanner, auto trader, card pricing and diagnostics for the EA FC Web App.
+// @version      0.8.0
+// @description  FC+ Quick Flip market scanner, SBC candidate bridge, auto trader, card pricing and diagnostics for the EA FC Web App.
 // @homepageURL  https://github.com/mohdaie/Fcplus-trader
 // @updateURL    https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
 // @downloadURL  https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var APP_ID = 'fcplus-auto-v071';
+  var APP_ID = 'fcplus-auto-v080';
   if (document.getElementById(APP_ID)) return;
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -45,7 +45,8 @@
     maxScanPages: 40,
     scanPageDelayMs: 1200,
     showAltPositions: true,
-    showCardPrices: true
+    showCardPrices: true,
+    quickFlipQuality: 'silver'
   };
 
   var stored = GM_getValue('fcplus_settings_v031', {}) || {};
@@ -145,7 +146,8 @@
       maxScanPages: state.maxScanPages,
       scanPageDelayMs: state.scanPageDelayMs,
       showAltPositions: state.showAltPositions,
-      showCardPrices: state.showCardPrices
+      showCardPrices: state.showCardPrices,
+      quickFlipQuality: state.quickFlipQuality
     });
   }
 
@@ -659,15 +661,25 @@
   }
 
 
-  function criteriaForSilverQuickFlip() {
+  function quickFlipQualityLabel(value) {
+    var q = lower(value || state.quickFlipQuality || 'silver');
+    if (q === 'bronze') return 'Bronze';
+    if (q === 'gold') return 'Gold';
+    if (q === 'special') return 'Special';
+    return 'Silver';
+  }
+
+  function criteriaForQuickFlip() {
     var w = pageWindow();
     if (!w.UTSearchCriteriaDTO) return null;
 
     var criteria = new w.UTSearchCriteriaDTO();
+    var quality = lower(state.quickFlipQuality || 'silver');
+
     try { criteria.count = 20; } catch (e) {}
     try { criteria.offset = 0; } catch (e) {}
     try { criteria.type = (w.SearchType && w.SearchType.PLAYER) || 'player'; } catch (e) {}
-    try { criteria.level = 'silver'; } catch (e) {}
+    try { criteria.level = quality === 'special' ? 'any' : quality; } catch (e) {}
     try { criteria.position = 'any'; } catch (e) {}
     try { criteria.nation = -1; } catch (e) {}
     try { criteria.league = -1; } catch (e) {}
@@ -680,6 +692,10 @@
     try { criteria.maskedDefId = 0; } catch (e) {}
     try { criteria.isExactSearch = false; } catch (e) {}
     return criteria;
+  }
+
+  function matchesQuickFlipQuality(row, quality) {
+    return lower(playerQuality(row)) === lower(quality || state.quickFlipQuality || 'silver');
   }
 
   function eaSearchWithCriteria(criteria, page) {
