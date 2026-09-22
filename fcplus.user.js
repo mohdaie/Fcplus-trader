@@ -1653,11 +1653,24 @@
           ' | ' + (row.leagueName || '—') +
           ' | ' + nation;
 
+        var actions = document.createElement('div');
+        actions.className = 'fcp-sbc-player-actions';
+
         var price = document.createElement('span');
         price.textContent = (row.buyNow ? row.buyNow.toLocaleString() : '—') + ' BIN';
 
+        var scan = document.createElement('button');
+        scan.type = 'button';
+        scan.className = 'fcp-sbc-quickscan';
+        scan.textContent = 'SCAN';
+        scan.addEventListener('click', function () {
+          scanSbcPlayerForQuickFlip(row, scan);
+        });
+
+        actions.appendChild(price);
+        actions.appendChild(scan);
         div.appendChild(details);
-        div.appendChild(price);
+        div.appendChild(actions);
         playersBox.appendChild(div);
       });
     }
@@ -1803,6 +1816,146 @@
 
     if (selectionSeq === state.sbc.selectionSeq) renderSbcPanel();
   }
+
+
+  async function scanSbcPlayerForQuickFlip(row, button) {
+    if (!row || !row.definitionId) {
+      log('SBC → QUICK FLIP · player ID unavailable');
+      return;
+    }
+
+    if (state.liveTrade) {
+      log('SBC → QUICK FLIP · finish the active trade before switching player');
+      return;
+    }
+
+    if (state.running) stop('Switching Quick Flip candidate from SBC');
+
+    enrichPlayerMetadata(row);
+    var quality = lower(row.qualityLabel || playerQuality(row) || 'silver');
+    if (['bronze','silver','gold','special'].indexOf(quality) < 0) quality = 'silver';
+
+    state.quickFlipQuality = quality;
+    saveSettings();
+    state.quickFlip.candidate = null;
+    state.quickFlip.status = 'Scanning ' + row.name + ' exact market…';
+    state.quickFlip.scannedAt = 0;
+    state.quickFlip.scannedListings = 0;
+    state.quickFlip.uniquePlayers = 1;
+    state.quickFlip.checkedPlayers = 0;
+    render();
+
+    var oldText = button && button.textContent;
+    if (button) {
+      button.disabled = true;
+      button.textContent = 'SCANNING…';
+    }
+
+    log(
+      'SBC → QUICK FLIP · ' + row.name + ' ' + row.rating +
+      ' · quality ' + quickFlipQualityLabel()
+    );
+
+    try {
+      var rows = await eaDirectSearch(0, row.definitionId);
+      var bins = rows.map(function (x) { return x.buyNow; }).filter(Boolean)
+        .sort(function (a, b) { return a - b; });
+
+      if (bins.length < 2) {
+        throw new Error('Not enough live listings to price this player safely');
+      }
+
+      var stable = stableBIN(bins);
+      var minBin = bins[0] || 0;
+      var minBid = rows.map(function (x) { return x.currentBid || x.startPrice; }).filter(Boolean)
+        .sort(function (a, b) { return a - b; })[0] || 0;
+      var netSale = Math.floor(stable * 0.95);
+      var maxBid = quickFlipEntryFor(stable, state.quickFlipPreferredProfit);
+
+      var immediate = rows.filter(function (x) {
+        var bid = x.currentBid || x.startPrice;
+        return (x.buyNow > 0 && x.buyNow <= maxBid) ||
+          (bid > 0 && bid <= maxBid && x.timeSeconds <= 120);
+      }).sort(function (a, b) {
+        var ae = Math.min(a.buyNow || Infinity, a.currentBid || a.startPrice || Infinity);
+        var be = Math.min(b.buyNow || Infinity, b.currentBid || b.startPrice || Infinity);
+        return ae - be;
+      })[0] || null;
+
+      var currentEntry = immediate
+        ? Math.min(immediate.buyNow || Infinity, immediate.currentBid || immediate.startPrice || Infinity)
+        : minBin;
+      if (!Number.isFinite(currentEntry)) currentEntry = 0;
+
+      var candidate = {
+        definitionId: row.definitionId,
+        name: row.name,
+        rating: row.rating,
+        qualityLabel: row.qualityLabel,
+        clubName: row.clubName,
+        leagueName: row.leagueName,
+        nationName: row.nationName,
+        nationFlag: row.nationFlag,
+        sightings: rows.length,
+        sample: rows.length,
+        minBin: minBin,
+        stableBIN: stable,
+        minBid: minBid,
+        maxBid: maxBid,
+        netSale: netSale,
+        expectedProfit: maxBid ? netSale - maxBid : 0,
+        currentEntryProfit: currentEntry ? netSale - currentEntry : 0,
+        immediate: !!immediate,
+        source: 'sbc'
+      };
+
+      state.quickFlip.candidate = candidate;
+      state.quickFlip.scannedAt = Date.now();
+      state.quickFlip.scannedListings = rows.length;
+      state.quickFlip.uniquePlayers = 1;
+      state.quickFlip.checkedPlayers = 1;
+      state.quickFlip.status = candidate.immediate
+        ? 'SBC player ready · opportunity found'
+        : 'SBC player ready · monitoring entry ≤ ' + maxBid.toLocaleString();
+
+      state.market = {
+        absMinBIN: minBin,
+        stableBIN: stable,
+        minBid: minBid,
+        listings: rows.length,
+        pages: 1,
+        probes: 0,
+        scannedAt: Date.now(),
+        fullScan: false,
+        fastScan: false,
+        smartScan: false,
+        definitionId: row.definitionId,
+        futggPrice: 0,
+        futggSalesMedian: 0,
+        futggStatus: 'not checked',
+        priceSource: 'EA SBC → QUICK FLIP',
+        confidence: rows.length >= 8 ? 'HIGH' : 'MEDIUM'
+      };
+
+      render();
+      log(
+        'SBC → QUICK FLIP READY · ' + row.name +
+        ' · market ' + stable.toLocaleString() +
+        ' · max entry ' + maxBid.toLocaleString() +
+        ' · target +' + Math.max(0, candidate.expectedProfit).toLocaleString()
+      );
+    } catch (e) {
+      state.quickFlip.status = 'SBC player scan failed · ' + (e && e.message ? e.message : String(e));
+      log(state.quickFlip.status);
+      renderQuickFlip();
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = oldText || 'SCAN';
+      }
+    }
+  }
+
 
   async function scanPlayersForSelectedSbc() {
     if (state.sbc.scanning) return;
