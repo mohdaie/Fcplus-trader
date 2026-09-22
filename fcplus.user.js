@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC+ Auto Trader Mobile
 // @namespace    https://fcplus.local/
-// @version      0.5.0
+// @version      0.5.1
 // @description  FC+ Silver Quickflip market scanner, auto trader, card pricing and diagnostics for the EA FC Web App.
 // @homepageURL  https://github.com/mohdaie/Fcplus-trader
 // @updateURL    https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var APP_ID = 'fcplus-auto-v050';
+  var APP_ID = 'fcplus-auto-v051';
   if (document.getElementById(APP_ID)) return;
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -1483,6 +1483,65 @@
     return true;
   }
 
+  async function setSellDurationOneHour() {
+    var hourPattern = /^1\s*(hour|hr)$/i;
+
+    // Native select, if EA exposes one.
+    var selects = Array.from(document.querySelectorAll('select')).filter(visible);
+    for (var i = 0; i < selects.length; i++) {
+      var select = selects[i];
+      var options = Array.from(select.options || []);
+      var oneHour = options.find(function (option) {
+        return hourPattern.test(text(option.textContent || option.label || option.value || ''));
+      });
+      if (!oneHour) continue;
+      select.value = oneHour.value;
+      select.dispatchEvent(new Event('input', { bubbles: true }));
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      await sleep(120);
+      return true;
+    }
+
+    // EA mobile normally renders duration as a custom button/row.
+    var durationControl = findControl([
+      /^Duration$/i,
+      /^List Duration$/i,
+      /^1\s*(Hour|Hr)$/i,
+      /^(3|6|12)\s*(Hours?|Hrs?)$/i,
+      /^1\s*Day$/i
+    ]);
+
+    if (!durationControl) {
+      var durationLabel = exactTextNode('Duration') || exactTextNode('List Duration');
+      if (durationLabel) durationControl = clickableAncestor(durationLabel);
+    }
+
+    if (durationControl) {
+      var currentText = text(durationControl.innerText || durationControl.textContent || '');
+      if (hourPattern.test(currentText)) return true;
+
+      clickLikeUser(durationControl);
+      await sleep(180);
+
+      var option = findControl([/^1\s*(Hour|Hr)$/i]);
+      if (!option) {
+        var hourNode = exactTextNode('1 Hour') || exactTextNode('1 Hr');
+        if (hourNode) option = clickableAncestor(hourNode);
+      }
+      if (option) {
+        clickLikeUser(option);
+        await sleep(180);
+        return true;
+      }
+    }
+
+    // Some EA builds show the selected duration as plain text rather than a button.
+    var nodes = Array.from(document.querySelectorAll('div,span,p,label')).filter(visible);
+    return nodes.some(function (node) {
+      return hourPattern.test(text(node.textContent || ''));
+    });
+  }
+
   function numberNear(labelRegex) {
     var els = Array.from(document.querySelectorAll('div,span,p')).filter(visible);
     for (var i = 0; i < els.length; i++) {
@@ -1862,12 +1921,23 @@
       return;
     }
 
-    log('List ' + sellStart.toLocaleString() + ' / ' + sellBIN.toLocaleString());
+    log('List ' + sellStart.toLocaleString() + ' / ' + sellBIN.toLocaleString() + ' · 1 hour');
 
-    if (state.dryRun) return;
+    if (state.dryRun) {
+      log('DRY RUN: would list for 1 hour');
+      return;
+    }
 
     setInput(startInput, sellStart);
     setInput(binInput, sellBIN);
+
+    var durationSet = await setSellDurationOneHour();
+    if (!durationSet) {
+      log('Sell paused · could not confirm 1 hour listing duration');
+      return;
+    }
+
+    log('Sell duration · 1 hour');
     await sleep(250);
     clickLikeUser(submit);
 
@@ -2415,6 +2485,7 @@
             '<span id="fcp-cond-bid">' + (state.autoBid ? 'Auto bid / rebid' : 'Bid off') + '</span>' +
             '<span id="fcp-cond-relist">' + (state.autoSell ? 'Auto relist' : 'Relist off') + '</span>' +
             '<span id="fcp-cond-mode">' + (state.dryRun ? 'Dry run' : 'Live') + '</span>' +
+            '<span>List 1 hour</span>' +
             '<span id="fcp-cond-trades">Max ' + state.maxTrades + ' trades</span>' +
           '</div>' +
         '</section>' +
