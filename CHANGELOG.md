@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.2
+
+- Added FUTBIN-style **alternate-position badges directly on player cards**.
+- Position badges are injected through EA's player-card render path, so they can appear across Squad, SBC, Club, Transfer Market, and other views that use the standard player-card renderer.
+- Uses the card's actual EA `possiblePositions` / `basePossiblePositions` data and removes the preferred position from the badge stack.
+- Added a **Player Cards → Alternate positions** toggle in FC+ settings, enabled by default.
+- Designed the badges as compact vertical chips on the right side of each card for mobile use.
+- The hook re-attaches if another enhancer re-wraps EA's card renderer, improving compatibility with the user's existing Enhancer plugin.
+
 ## 0.4.1
 
 - Fixed the new FC+ bottom-nav button not responding on mobile.
