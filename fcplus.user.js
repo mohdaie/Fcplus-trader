@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC+ Auto Trader Mobile
 // @namespace    https://fcplus.local/
-// @version      0.8.2
+// @version      0.8.3
 // @description  FC+ Quick Flip market scanner, SBC candidate bridge, auto trader, card pricing and diagnostics for the EA FC Web App.
 // @homepageURL  https://github.com/mohdaie/Fcplus-trader
 // @updateURL    https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
@@ -14,13 +14,13 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @connect      www.fut.gg
-// @run-at       document-idle
+// @run-at       document-start
 // ==/UserScript==
 
 (function () {
   'use strict';
 
-  var APP_ID = 'fcplus-auto-v082';
+  var APP_ID = 'fcplus-auto-v083';
   if (document.getElementById(APP_ID)) return;
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -3678,11 +3678,11 @@
     var n = Number(price) || 0;
     badge.classList.toggle('fcplus-price-loading', !n);
     badge.innerHTML = n
-      ? '<span class="fcplus-coin">●</span><b>' + compactPrice(n) + '</b>'
-      : '<span class="fcplus-price-dots">•••</span>';
+      ? '<small>MIN BIN</small><span class="fcplus-coin">●</span><b>' + compactPrice(n) + '</b>'
+      : '<small>MIN BIN</small><span class="fcplus-price-dots">•••</span>';
     badge.title = n
-      ? ('FC+ market price · ' + n.toLocaleString() + ' coins · ' + (source || 'market'))
-      : 'FC+ price loading';
+      ? ('FC+ Min BIN · ' + n.toLocaleString() + ' coins · ' + (source || 'market'))
+      : 'FC+ Min BIN loading';
   }
 
   function drainCardPriceQueue() {
@@ -3761,13 +3761,17 @@
     if (!isPlayer) return;
 
     var root = view.__root || (typeof view.getRootElement === 'function' ? view.getRootElement() : null);
-    if (!root || !root.parentElement) return;
+    if (!root) return;
 
-    var host = root.parentElement;
+    // All FC+ card UI is anchored to UTPlayerItemView.__root so it stays with
+    // the card artwork in Club, Squads, Transfer Market, SBC and other lists.
+    var host = root;
     try {
+      host.classList.add('fcplus-card-host');
       var computed = getComputedStyle(host);
       if (computed.position === 'static') host.style.position = 'relative';
       host.style.overflow = 'visible';
+      host.style.zIndex = host.style.zIndex || '1';
     } catch (e) {}
 
     if (state.showAltPositions) {
@@ -3819,7 +3823,7 @@
     if (!Ctor || !Ctor.prototype || typeof Ctor.prototype.renderItem !== 'function') return false;
 
     var current = Ctor.prototype.renderItem;
-    if (current.__fcplusCardDecor043) return true;
+    if (current.__fcplusCardDecor083) return true;
 
     var wrapped = function (player, template) {
       var result = current.apply(this, arguments);
@@ -3831,9 +3835,9 @@
     };
 
     try {
-      Object.defineProperty(wrapped, '__fcplusCardDecor043', { value: true });
+      Object.defineProperty(wrapped, '__fcplusCardDecor083', { value: true });
     } catch (e) {
-      wrapped.__fcplusCardDecor043 = true;
+      wrapped.__fcplusCardDecor083 = true;
     }
 
     Ctor.prototype.renderItem = wrapped;
@@ -4028,7 +4032,7 @@
     root.innerHTML =
       '<div class="fcp-native-head">' +
         '<button id="fcp-close" type="button">‹</button>' +
-        '<div><b>FC+ Trader</b><small>v0.8.2 · FC+ Quick Flip</small></div>' +
+        '<div><b>FC+ Trader</b><small>v0.8.3 · FC+ Quick Flip</small></div>' +
         '<span id="fcp-headstate">DRY</span>' +
       '</div>' +
       '<div id="fcp-body" class="fcp-native-body">' +
@@ -4271,7 +4275,7 @@
     installNativeInteractionBridge();
     installPlayerCardEnhancer();
     nativeUiHeartbeat();
-    setInterval(nativeUiHeartbeat, 900);
+    setInterval(nativeUiHeartbeat, 350);
   }
 
   GM_addStyle(
