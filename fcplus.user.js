@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC+ Auto Trader Mobile
 // @namespace    https://fcplus.local/
-// @version      0.5.2
+// @version      0.6.0
 // @description  FC+ Silver Quickflip market scanner, auto trader, card pricing and diagnostics for the EA FC Web App.
 // @homepageURL  https://github.com/mohdaie/Fcplus-trader
 // @updateURL    https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var APP_ID = 'fcplus-auto-v052';
+  var APP_ID = 'fcplus-auto-v060';
   if (document.getElementById(APP_ID)) return;
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -32,7 +32,7 @@
   var DEFAULTS = {
     dryRun: true,
     autoBid: true,
-    autoBuyNow: false,
+    autoBuyNow: true,
     autoSell: true,
     minProfit: 300,
     maxBidCap: 0,
@@ -74,6 +74,8 @@
     logHistory: [],
     lastQuickFlipDecision: '',
     lastQuickFlipDecisionAt: 0,
+    liveTrade: null,
+    liveBusy: false,
     market: {
       absMinBIN: 0,
       stableBIN: 0,
@@ -92,8 +94,22 @@
       priceSource: 'PAGE',
       confidence: '—'
     },
-    daily: dailyStored.date === today() ? dailyStored : { date: today(), estimatedProfit: 0, won: 0, listed: 0 }
+    daily: dailyStored.date === today() ? dailyStored : { date: today(), estimatedProfit: 0, realizedProfit: 0, won: 0, listed: 0, sold: 0 }
   });
+
+  state.daily.estimatedProfit = Number(state.daily.estimatedProfit) || 0;
+  state.daily.realizedProfit = Number(state.daily.realizedProfit) || 0;
+  state.daily.won = Number(state.daily.won) || 0;
+  state.daily.listed = Number(state.daily.listed) || 0;
+  state.daily.sold = Number(state.daily.sold) || 0;
+
+  // One-time migration: Silver Quickflip is meant to choose either a cheap BIN or bid automatically.
+  if (!GM_getValue('fcplus_silver_quickflip_v060_defaults', false)) {
+    state.autoBid = true;
+    state.autoBuyNow = true;
+    state.autoSell = true;
+    GM_setValue('fcplus_silver_quickflip_v060_defaults', true);
+  }
 
   GM_setValue('fcplus_daily_v031', state.daily);
 
@@ -527,7 +543,8 @@
         startPrice: Number(auction && auction.startingBid) || 0,
         currentBid: Number(auction && auction.currentBid) || 0,
         timeSeconds: Number(auction && auction.expires) || 999999,
-        marketAverage: Number(item && item._marketAverage) || 0
+        marketAverage: Number(item && item._marketAverage) || 0,
+        rawItem: item
       };
     }).filter(function (x) { return x.buyNow > 0 || x.startPrice > 0; });
   }
