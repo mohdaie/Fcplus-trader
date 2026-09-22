@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC+ Auto Trader Mobile
 // @namespace    https://fcplus.local/
-// @version      0.6.2
+// @version      0.7.0
 // @description  FC+ Silver Quickflip market scanner, auto trader, card pricing and diagnostics for the EA FC Web App.
 // @homepageURL  https://github.com/mohdaie/Fcplus-trader
 // @updateURL    https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var APP_ID = 'fcplus-auto-v062';
+  var APP_ID = 'fcplus-auto-v070';
   if (document.getElementById(APP_ID)) return;
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -79,6 +79,17 @@
     lastQuickFlipDecisionAt: 0,
     liveTrade: null,
     liveBusy: false,
+    sbc: {
+      scanning: false,
+      sets: [],
+      selectedSetId: 0,
+      challenges: [],
+      selectedChallengeId: 0,
+      requirements: [],
+      scanParams: null,
+      playerResults: [],
+      status: 'Scan EA SBCs to begin'
+    },
     market: {
       absMinBIN: 0,
       stableBIN: 0,
@@ -556,6 +567,11 @@
         currentBid: Number(auction && auction.currentBid) || 0,
         timeSeconds: Number(auction && auction.expires) || 999999,
         marketAverage: Number(item && item._marketAverage) || 0,
+        leagueId: Number(item && item._staticData && (item._staticData.leagueId || item._staticData.league)) || 0,
+        clubId: Number(item && item._staticData && (item._staticData.teamId || item._staticData.clubId || item._staticData.team)) || 0,
+        nationId: Number(item && item._staticData && (item._staticData.nationId || item._staticData.nation)) || 0,
+        rare: !!(item && (item.rareflag || item._rareflag || (item._staticData && item._staticData.rareflag))),
+        level: String(item && (item.level || item._level || item.quality || '') || '').toLowerCase(),
         rawItem: item
       };
     }).filter(function (x) { return x.buyNow > 0 || x.startPrice > 0; });
