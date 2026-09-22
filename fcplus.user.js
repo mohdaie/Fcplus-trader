@@ -3226,13 +3226,38 @@
     var bins = rows.map(function (x) { return x.buyNow; }).filter(Boolean)
       .sort(function (a, b) { return a - b; });
     var stable = stableBIN(bins);
+    var targetInfo = bestQuickFlipTarget(stable, rows);
     var candidateAge = Math.max(0, Date.now() - (state.quickFlip.scannedAt || Date.now()));
-    var preferredPhase = candidateAge < state.quickFlipPreferredMs;
+    var preferredPhase = candidateAge < state.quickFlipPreferredMs && targetInfo.preferredPossible;
     var activeProfitTarget = preferredPhase
-      ? Math.max(state.minProfit, state.quickFlipPreferredProfit)
+      ? targetInfo.preferredTarget
       : state.minProfit;
-    var maxEntry = quickFlipEntryFor(stable, activeProfitTarget);
+    var maxEntry = preferredPhase ? targetInfo.preferredEntry : targetInfo.floorEntry;
     var minBin = bins[0] || 0;
+
+    candidate.priceFloor = targetInfo.priceFloor;
+    candidate.priceCeiling = targetInfo.priceCeiling;
+
+    if (!targetInfo.floorPossible) {
+      candidate.maxBid = 0;
+      candidate.expectedProfit = targetInfo.maxPossibleProfit;
+      candidate.currentEntryProfit = minBin ? targetInfo.netSale - minBin : 0;
+      state.quickFlip.status =
+        'Skip ' + candidate.name +
+        ' · EA min ' + (targetInfo.priceFloor ? targetInfo.priceFloor.toLocaleString() : 'unknown') +
+        ' only allows ' + (targetInfo.maxPossibleProfit >= 0 ? '+' : '') + targetInfo.maxPossibleProfit.toLocaleString();
+
+      renderQuickFlip();
+      log(
+        'ROTATE · ' + candidate.name +
+        ' · EA min ' + (targetInfo.priceFloor ? targetInfo.priceFloor.toLocaleString() : 'unknown') +
+        ' · max possible ' + (targetInfo.maxPossibleProfit >= 0 ? '+' : '') + targetInfo.maxPossibleProfit.toLocaleString() +
+        ' < floor +' + state.minProfit.toLocaleString()
+      );
+
+      await scanQuickFlipPlayers({ rotate: true });
+      return;
+    }
     var minBid = rows.map(function (x) { return x.currentBid || x.startPrice; }).filter(Boolean)
       .sort(function (a, b) { return a - b; })[0] || 0;
 
@@ -3253,7 +3278,9 @@
     state.market.confidence = rows.length >= 8 ? 'HIGH' : 'MEDIUM';
 
     var buy = rows.filter(function (row) {
-      return row.buyNow > 0 && row.buyNow <= maxEntry;
+      return row.buyNow > 0 &&
+        (!targetInfo.priceFloor || row.buyNow >= targetInfo.priceFloor) &&
+        row.buyNow <= maxEntry;
     }).sort(function (a, b) {
       return a.buyNow - b.buyNow || a.timeSeconds - b.timeSeconds;
     })[0] || null;
@@ -3262,7 +3289,10 @@
       row.effectiveBid = row.currentBid || row.startPrice;
       return row;
     }).filter(function (row) {
-      return row.effectiveBid > 0 && row.effectiveBid <= maxEntry && row.timeSeconds <= 120;
+      return row.effectiveBid > 0 &&
+        (!targetInfo.priceFloor || row.effectiveBid >= targetInfo.priceFloor) &&
+        row.effectiveBid <= maxEntry &&
+        row.timeSeconds <= 120;
     }).sort(function (a, b) {
       return a.timeSeconds - b.timeSeconds || a.effectiveBid - b.effectiveBid;
     })[0] || null;
@@ -3284,11 +3314,11 @@
 
     if (decision) {
       candidate.currentEntryProfit = Math.floor(stable * 0.95) - decision.price;
-      candidate.expectedProfit = Math.floor(stable * 0.95) - maxEntry;
+      candidate.expectedProfit = targetInfo.netSale - maxEntry;
       state.quickFlip.status = 'Monitoring ' + candidate.name + ' · entry found';
     } else {
       candidate.currentEntryProfit = minBin ? Math.floor(stable * 0.95) - minBin : 0;
-      candidate.expectedProfit = Math.floor(stable * 0.95) - maxEntry;
+      candidate.expectedProfit = targetInfo.netSale - maxEntry;
       state.quickFlip.status = 'Monitoring ' + candidate.name + ' · target +' + activeProfitTarget.toLocaleString() + ' · entry ≤ ' + maxEntry.toLocaleString();
     }
 
@@ -3317,6 +3347,7 @@
         log(
           'MONITOR · ' + candidate.name +
           ' · market ' + stable.toLocaleString() +
+          ' · EA min ' + (targetInfo.priceFloor ? targetInfo.priceFloor.toLocaleString() : '—') +
           ' · target +' + activeProfitTarget.toLocaleString() +
           ' · max entry ' + maxEntry.toLocaleString() +
           ' · cheapest BIN ' + (minBin ? minBin.toLocaleString() : '—')
