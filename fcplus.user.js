@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC+ Auto Trader Mobile
 // @namespace    https://fcplus.local/
-// @version      0.3.1
+// @version      0.3.2
 // @description  Mobile FC Web App market scanner, auto bid/rebid, auto relist, and hard trading limits.
 // @homepageURL  https://github.com/mohdaie/Fcplus-trader
 // @updateURL    https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
@@ -17,7 +17,7 @@
 (function () {
   'use strict';
 
-  var APP_ID = 'fcplus-auto-v031';
+  var APP_ID = 'fcplus-auto-v032';
   if (document.getElementById(APP_ID)) return;
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -38,7 +38,9 @@
     sessionMinutes: 60,
     dailyTarget: 100000,
     pollMs: 2500,
-    undercutSteps: 1
+    undercutSteps: 1,
+    maxScanPages: 40,
+    scanPageDelayMs: 1200
   };
 
   var stored = GM_getValue('fcplus_settings_v031', {}) || {};
@@ -52,7 +54,8 @@
     lastBidPlaced: 0,
     currentTarget: null,
     lastWinKey: '',
-    market: { absMinBIN: 0, stableBIN: 0, minBid: 0, listings: 0 },
+    scanningAll: false,
+    market: { absMinBIN: 0, stableBIN: 0, minBid: 0, listings: 0, pages: 0, scannedAt: 0, fullScan: false },
     daily: dailyStored.date === today() ? dailyStored : { date: today(), estimatedProfit: 0, won: 0, listed: 0 }
   });
 
@@ -71,7 +74,9 @@
       sessionMinutes: state.sessionMinutes,
       dailyTarget: state.dailyTarget,
       pollMs: state.pollMs,
-      undercutSteps: state.undercutSteps
+      undercutSteps: state.undercutSteps,
+      maxScanPages: state.maxScanPages,
+      scanPageDelayMs: state.scanPageDelayMs
     });
   }
 
@@ -194,18 +199,141 @@
     var listings = listingCards();
     if (!listings.length) return [];
 
-    var bins = listings.map(function (x) { return x.buyNow; }).filter(Boolean).sort(function (a, b) { return a - b; });
-    var bids = listings.map(function (x) { return x.currentBid || x.startPrice; }).filter(Boolean).sort(function (a, b) { return a - b; });
+    // Preserve a recent all-pages valuation for five minutes.
+    var fullScanFresh = state.market.fullScan && state.market.scannedAt &&
+      (Date.now() - state.market.scannedAt < 5 * 60 * 1000);
+
+    if (!fullScanFresh) {
+      var bins = listings.map(function (x) { return x.buyNow; }).filter(Boolean).sort(function (a, b) { return a - b; });
+      var bids = listings.map(function (x) { return x.currentBid || x.startPrice; }).filter(Boolean).sort(function (a, b) { return a - b; });
+
+      state.market = {
+        absMinBIN: bins[0] || 0,
+        stableBIN: stableBIN(bins),
+        minBid: bids[0] || 0,
+        listings: listings.length,
+        pages: 1,
+        scannedAt: Date.now(),
+        fullScan: false
+      };
+    }
+
+    renderMarket();
+    return listings;
+  }
+
+  function listingSignature(listings) {
+    return listings.slice(0, 8).map(function (x) {
+      return [x.name, x.startPrice, x.currentBid, x.buyNow, x.timeSeconds].join(':');
+    }).join('|');
+  }
+
+  function nextPageControl() {
+    var next = findControl([/^Next(?:\s*[›»>])?$/i, /^Next\b/i]);
+    if (!next) return null;
+    if (next.disabled || next.getAttribute('aria-disabled') === 'true') return null;
+    return next;
+  }
+
+  async function waitForNewResults(oldSignature) {
+    var deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      await sleep(250);
+      var now = listingCards();
+      if (now.length && listingSignature(now) !== oldSignature) return now;
+    }
+    return null;
+  }
+
+  function applyFullMarketAggregate(allListings, pages) {
+    var bins = allListings.map(function (x) { return x.buyNow; }).filter(Boolean).sort(function (a, b) { return a - b; });
+    var bids = allListings.map(function (x) { return x.currentBid || x.startPrice; }).filter(Boolean).sort(function (a, b) { return a - b; });
 
     state.market = {
       absMinBIN: bins[0] || 0,
       stableBIN: stableBIN(bins),
       minBid: bids[0] || 0,
-      listings: listings.length
+      listings: allListings.length,
+      pages: pages,
+      scannedAt: Date.now(),
+      fullScan: true
     };
 
     renderMarket();
-    return listings;
+  }
+
+  async function scanAllMarketPages() {
+    if (state.running) {
+      log('Stop AUTO before full-market scan');
+      return;
+    }
+    if (state.scanningAll) return;
+    if (pageType() !== 'results') {
+      log('Open the first Search Results page first');
+      return;
+    }
+
+    state.scanningAll = true;
+    var scanBtn = document.querySelector('#fcp-scanall');
+    if (scanBtn) {
+      scanBtn.disabled = true;
+      scanBtn.textContent = 'SCANNING…';
+    }
+
+    var all = [];
+    var seen = {};
+    var pages = 0;
+
+    try {
+      while (pages < state.maxScanPages) {
+        var listings = listingCards();
+        if (!listings.length) break;
+
+        var sig = listingSignature(listings);
+        if (seen[sig]) break;
+        seen[sig] = true;
+
+        pages++;
+        listings.forEach(function (x) {
+          all.push({
+            name: x.name,
+            startPrice: x.startPrice,
+            currentBid: x.currentBid,
+            buyNow: x.buyNow,
+            timeSeconds: x.timeSeconds
+          });
+        });
+
+        applyFullMarketAggregate(all, pages);
+        log('Scan page ' + pages + ' · ' + all.length + ' listings · min BIN ' +
+          (state.market.absMinBIN ? state.market.absMinBIN.toLocaleString() : '—'));
+
+        var next = nextPageControl();
+        if (!next) break;
+
+        clickLikeUser(next);
+        await sleep(state.scanPageDelayMs);
+
+        var changed = await waitForNewResults(sig);
+        if (!changed) {
+          log('Next page did not change; scan stopped');
+          break;
+        }
+      }
+
+      applyFullMarketAggregate(all, pages);
+      log('FULL SCAN · ' + pages + ' pages · ' + all.length + ' listings · MIN BIN ' +
+        (state.market.absMinBIN ? state.market.absMinBIN.toLocaleString() : '—'));
+    } catch (e) {
+      log('Full scan error: ' + (e && e.message ? e.message : String(e)));
+    } finally {
+      state.scanningAll = false;
+      if (scanBtn) {
+        scanBtn.disabled = false;
+        scanBtn.textContent = 'SCAN ALL PAGES';
+      }
+      render();
+    }
   }
 
   function clickable(el) {
@@ -311,14 +439,22 @@
   }
 
   function renderMarket() {
-    var bin = document.querySelector('#fcp-bin');
+    var minBin = document.querySelector('#fcp-minbin');
+    var stable = document.querySelector('#fcp-bin');
     var bid = document.querySelector('#fcp-bid');
     var max = document.querySelector('#fcp-maxbid');
-    if (bin) bin.textContent = state.market.stableBIN ? state.market.stableBIN.toLocaleString() : '—';
+    var scanInfo = document.querySelector('#fcp-scaninfo');
+    if (minBin) minBin.textContent = state.market.absMinBIN ? state.market.absMinBIN.toLocaleString() : '—';
+    if (stable) stable.textContent = state.market.stableBIN ? state.market.stableBIN.toLocaleString() : '—';
     if (bid) bid.textContent = state.market.minBid ? state.market.minBid.toLocaleString() : '—';
     if (max) {
       var m = maxBidFor(state.market.stableBIN);
       max.textContent = m ? m.toLocaleString() : '—';
+    }
+    if (scanInfo) {
+      scanInfo.textContent = state.market.fullScan
+        ? ('Full market · ' + state.market.pages + ' pages · ' + state.market.listings + ' listings')
+        : (state.market.listings ? ('Current page · ' + state.market.listings + ' listings') : 'Not scanned');
     }
   }
 
@@ -358,6 +494,7 @@
     state.sessionMinutes = Math.max(1, Number(document.querySelector('#fcp-session').value || 60));
     state.dailyTarget = Math.max(0, val('#fcp-dailytarget') || 100000);
     state.pollMs = Math.max(1800, Number(document.querySelector('#fcp-delay').value || 2.5) * 1000);
+    state.maxScanPages = Math.max(1, Math.min(100, coin(document.querySelector('#fcp-maxscanpages').value) || 40));
     saveSettings();
     render();
   }
@@ -654,13 +791,19 @@
     var root = document.createElement('section');
     root.id = APP_ID;
     root.innerHTML =
-      '<div class="fcp-head"><div><b>FC+ AUTO</b><small>v0.3.1 · auto-updating</small></div><button id="fcp-min" type="button">−</button></div>' +
+      '<div class="fcp-head"><div><b>FC+ AUTO</b><small>v0.3.2 · full-market scan</small></div><button id="fcp-min" type="button">−</button></div>' +
       '<div id="fcp-body">' +
         '<div class="fcp-top"><span id="fcp-state" data-on="0">STOPPED</span><span>Trades <b id="fcp-trades">0/' + state.maxTrades + '</b></span></div>' +
         '<div class="fcp-market">' +
+          '<div><small>MIN BIN</small><b id="fcp-minbin">—</b></div>' +
           '<div><small>STABLE BIN</small><b id="fcp-bin">—</b></div>' +
           '<div><small>MIN BID</small><b id="fcp-bid">—</b></div>' +
           '<div><small>MAX BID</small><b id="fcp-maxbid">—</b></div>' +
+        '</div>' +
+        '<div id="fcp-scaninfo" class="fcp-scaninfo">Not scanned</div>' +
+        '<div class="fcp-scanrow">' +
+          '<label>MAX SCAN PAGES<input id="fcp-maxscanpages" type="number" inputmode="numeric" min="1" max="100" value="' + state.maxScanPages + '"></label>' +
+          '<button id="fcp-scanall" type="button">SCAN ALL PAGES</button>' +
         '</div>' +
         '<div class="fcp-grid three">' +
           '<label>MIN PROFIT<input id="fcp-minprofit" type="number" inputmode="numeric" value="' + state.minProfit + '"></label>' +
@@ -691,6 +834,11 @@
       if (state.running) stop('Stopped by user'); else start();
     });
 
+    root.querySelector('#fcp-scanall').addEventListener('click', function () {
+      readUI();
+      scanAllMarketPages();
+    });
+
     root.querySelector('#fcp-min').addEventListener('click', function (e) {
       var body = root.querySelector('#fcp-body');
       var hidden = body.style.display === 'none';
@@ -719,10 +867,14 @@
     '#' + APP_ID + ' .fcp-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}' +
     '#' + APP_ID + ' #fcp-state{padding:4px 8px;border-radius:99px;background:#ffffff10;color:#ffffff80;font-weight:900;font-size:10px}' +
     '#' + APP_ID + ' #fcp-state[data-on="1"]{background:#00f58b22;color:#75ffb8}' +
-    '#' + APP_ID + ' .fcp-market{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:9px}' +
+    '#' + APP_ID + ' .fcp-market{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:7px}' +
     '#' + APP_ID + ' .fcp-market>div{padding:8px;border-radius:9px;background:#ffffff08;min-width:0}' +
     '#' + APP_ID + ' .fcp-market small{display:block;color:#ffffff65;font-size:8px}' +
     '#' + APP_ID + ' .fcp-market b{display:block;margin-top:2px;font-size:13px;overflow:hidden;text-overflow:ellipsis}' +
+    '#' + APP_ID + ' .fcp-scaninfo{padding:6px 8px;border-radius:8px;background:#ffffff07;color:#ffffff72;font-size:9px}' +
+    '#' + APP_ID + ' .fcp-scanrow{display:grid;grid-template-columns:1fr 1.5fr;gap:7px;align-items:end;margin-top:7px}' +
+    '#' + APP_ID + ' #fcp-scanall{height:35px;border:0;border-radius:8px;background:#d9e4ec;color:#0b1014;font-size:10px;font-weight:900}' +
+    '#' + APP_ID + ' #fcp-scanall:disabled{opacity:.55}' +
     '#' + APP_ID + ' .fcp-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:8px}' +
     '#' + APP_ID + ' .fcp-grid.three{grid-template-columns:1fr 1fr 1fr}' +
     '#' + APP_ID + ' label{font-size:8px;color:#ffffff75;min-width:0}' +
