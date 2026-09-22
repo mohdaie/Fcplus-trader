@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.4
+
+- Added **Smart Price** mode.
+- Uses FUT.GG structured per-card pricing when its signed price endpoint is available.
+- Does not bypass FUT.GG challenges; if FUT.GG returns a challenge, rate limit, or other failure, FC+ automatically falls back to EA.
+- Added direct read-only EA market validation through the Web App's own market search service, avoiding UI scrolling for price discovery.
+- Added direct EA binary price probing for minimum BIN.
+- Added FUT.GG reference, price source, and confidence indicators in the FC+ panel.
+- Existing EA UI Fast BIN and full-page scan remain available as fallbacks.
+- Fixed sell-form detection so auto-relist can continue after a won-item screen expands into the listing form.
+
 ## 0.3.2
 
 - Added full-market multi-page scan from the current Search Results page.
