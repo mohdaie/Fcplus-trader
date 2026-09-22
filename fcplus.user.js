@@ -3500,7 +3500,7 @@
     root.innerHTML =
       '<div class="fcp-native-head">' +
         '<button id="fcp-close" type="button">‹</button>' +
-        '<div><b>FC+ Trader</b><small>v0.6.2 · Silver Quickflip</small></div>' +
+        '<div><b>FC+ Trader</b><small>v0.7.0 · Silver Quickflip</small></div>' +
         '<span id="fcp-headstate">DRY</span>' +
       '</div>' +
       '<div id="fcp-body" class="fcp-native-body">' +
@@ -3545,6 +3545,25 @@
           '<div id="fcp-action">Ready · scan a player first</div>' +
           '<button id="fcp-start" class="fcp-start" data-on="0" type="button">AUTO TRADE</button>' +
         '</section>' +
+
+        '<details class="fcp-fold">' +
+          '<summary><span>SBC Scanner</span><b>›</b></summary>' +
+          '<div class="fcp-fold-body">' +
+            '<div class="fcp-settings-block">' +
+              '<div class="fcp-section-title"><h3>SBC</h3><span id="fcp-sbc-status">Scan EA SBCs to begin</span></div>' +
+              '<button id="fcp-sbc-scan" class="fcp-primary fcp-secondary-green" type="button">SCAN SBC</button>' +
+              '<div class="fcp-sbc-label">AVAILABLE SBC</div>' +
+              '<div id="fcp-sbc-sets" class="fcp-sbc-list"></div>' +
+              '<div class="fcp-sbc-label">CHALLENGES</div>' +
+              '<div id="fcp-sbc-challenges" class="fcp-sbc-list"></div>' +
+              '<div class="fcp-sbc-label">REQUIREMENTS</div>' +
+              '<div id="fcp-sbc-reqs" class="fcp-sbc-reqs"><div class="fcp-sbc-empty">Choose an SBC challenge</div></div>' +
+              '<button id="fcp-sbc-scanplayers" class="fcp-primary fcp-sbc-player-btn" type="button" disabled>SCAN PLAYERS FROM REQUIREMENTS</button>' +
+              '<div class="fcp-sbc-label">PLAYER CANDIDATES</div>' +
+              '<div id="fcp-sbc-players" class="fcp-sbc-players"></div>' +
+            '</div>' +
+          '</div>' +
+        '</details>' +
 
         '<details class="fcp-fold">' +
           '<summary><span>Smart Price</span><b>›</b></summary>' +
@@ -3634,6 +3653,14 @@
       }
     });
 
+    root.querySelector('#fcp-sbc-scan').addEventListener('click', function () {
+      scanSbcSets();
+    });
+
+    root.querySelector('#fcp-sbc-scanplayers').addEventListener('click', function () {
+      scanPlayersForSelectedSbc();
+    });
+
     root.querySelector('#fcp-smartprice').addEventListener('click', function () {
       readUI();
       smartPriceScan();
@@ -3660,6 +3687,7 @@
     });
 
     render();
+    renderSbcPanel();
     log('Ready · Silver Quickflip workflow loaded');
 
     installNativeInteractionBridge();
@@ -3766,6 +3794,21 @@
     '#' + APP_ID + ' .fcp-fold[open] summary b{transform:rotate(90deg)}' +
     '#' + APP_ID + ' .fcp-fold-body{padding:0 14px 14px;border-top:1px solid #ffffff0e}' +
     '#' + APP_ID + ' .fcp-fold-body>.fcp-market{margin-top:14px}' +
+    '#' + APP_ID + ' .fcp-secondary-green{margin-top:4px;background:#0fcf82}' +
+    '#' + APP_ID + ' .fcp-sbc-label{margin:14px 0 7px;color:#ffffff66;font-size:8px;font-weight:900;letter-spacing:.11em}' +
+    '#' + APP_ID + ' .fcp-sbc-list{display:flex;flex-direction:column;gap:7px}' +
+    '#' + APP_ID + ' .fcp-sbc-choice{width:100%;padding:10px 11px;border:1px solid #ffffff14;border-radius:10px;background:#172431;color:#eaf1f5;text-align:left;font-size:10px;font-weight:750}' +
+    '#' + APP_ID + ' .fcp-sbc-choice.small{padding:8px 10px;font-size:9px}' +
+    '#' + APP_ID + ' .fcp-sbc-choice.selected{border-color:#00d978;background:#183329;color:#fff}' +
+    '#' + APP_ID + ' .fcp-sbc-choice:disabled{opacity:.38}' +
+    '#' + APP_ID + ' .fcp-sbc-reqs{display:flex;flex-direction:column;gap:6px}' +
+    '#' + APP_ID + ' .fcp-sbc-req{padding:8px 9px;border-radius:9px;background:#172431;color:#dce6ed;font-size:9px;line-height:1.4}' +
+    '#' + APP_ID + ' .fcp-sbc-empty{padding:9px;color:#ffffff58;font-size:9px}' +
+    '#' + APP_ID + ' .fcp-sbc-player-btn{margin-top:12px}' +
+    '#' + APP_ID + ' .fcp-sbc-players{display:flex;flex-direction:column;gap:6px}' +
+    '#' + APP_ID + ' .fcp-sbc-player{display:flex;justify-content:space-between;gap:8px;padding:8px 9px;border-radius:9px;background:#172431}' +
+    '#' + APP_ID + ' .fcp-sbc-player b{color:#fff;font-size:10px}' +
+    '#' + APP_ID + ' .fcp-sbc-player span{color:#75d8ff;font-size:9px;white-space:nowrap}' +
     '#' + APP_ID + ' .fcp-settings-block{padding:14px 0;border-bottom:1px solid #ffffff0e}' +
     '#' + APP_ID + ' .fcp-settings-block:last-child{border-bottom:0;padding-bottom:0}' +
     '#' + APP_ID + ' .fcp-settings-block h3{margin:0 0 10px}' +
