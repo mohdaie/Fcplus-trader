@@ -73,7 +73,7 @@
       scannedListings: 0,
       uniquePlayers: 0,
       checkedPlayers: 0,
-      status: 'Ready to scan silver players'
+      status: 'Ready to scan selected Quick Flip quality'
     },
     logHistory: [],
     lastQuickFlipDecision: '',
@@ -119,7 +119,7 @@
   state.daily.listed = Number(state.daily.listed) || 0;
   state.daily.sold = Number(state.daily.sold) || 0;
 
-  // One-time migration: Silver Quickflip is meant to choose either a cheap BIN or bid automatically.
+  // One-time migration: Quick Flip uses both cheap BIN and bid opportunities automatically.
   if (!GM_getValue('fcplus_silver_quickflip_v060_defaults', false)) {
     state.autoBid = true;
     state.autoBuyNow = true;
