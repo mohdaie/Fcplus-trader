@@ -3801,7 +3801,7 @@
     root.innerHTML =
       '<div class="fcp-native-head">' +
         '<button id="fcp-close" type="button">‹</button>' +
-        '<div><b>FC+ Trader</b><small>v0.7.1 · Silver Quickflip</small></div>' +
+        '<div><b>FC+ Trader</b><small>v0.8.0 · FC+ Quick Flip</small></div>' +
         '<span id="fcp-headstate">DRY</span>' +
       '</div>' +
       '<div id="fcp-body" class="fcp-native-body">' +
@@ -3809,15 +3809,21 @@
         '<section class="fcp-section fcp-method-card">' +
           '<div class="fcp-eyebrow">TRADING METHOD</div>' +
           '<div class="fcp-method-title-row">' +
-            '<div><h2>Silver Quickflip</h2><p>FC+ finds the player. You do not need to key in a name.</p></div>' +
+            '<div><h2>FC+ Quick Flip</h2><p>Choose a card quality, or send a player here directly from SBC Scanner.</p></div>' +
             '<span id="fcp-state" data-on="0">STOPPED</span>' +
+          '</div>' +
+          '<div class="fcp-quality-picker" role="radiogroup" aria-label="Quick Flip card quality">' +
+            '<label><input type="radio" name="fcp-quality" value="bronze"' + (state.quickFlipQuality === 'bronze' ? ' checked' : '') + '><span>Bronze</span></label>' +
+            '<label><input type="radio" name="fcp-quality" value="silver"' + (state.quickFlipQuality === 'silver' ? ' checked' : '') + '><span>Silver</span></label>' +
+            '<label><input type="radio" name="fcp-quality" value="gold"' + (state.quickFlipQuality === 'gold' ? ' checked' : '') + '><span>Gold</span></label>' +
+            '<label><input type="radio" name="fcp-quality" value="special"' + (state.quickFlipQuality === 'special' ? ' checked' : '') + '><span>Special</span></label>' +
           '</div>' +
           '<button id="fcp-scanplayer" class="fcp-primary" type="button">SCAN PLAYER</button>' +
         '</section>' +
 
         '<section class="fcp-section">' +
           '<div class="fcp-section-title"><h3>Result</h3><span>Trades <b id="fcp-trades">0/' + state.maxTrades + '</b></span></div>' +
-          '<div id="fcp-result-status" class="fcp-result-status">Ready to scan silver players</div>' +
+          '<div id="fcp-result-status" class="fcp-result-status">Ready to scan ' + quickFlipQualityLabel() + ' players</div>' +
           '<div class="fcp-result-grid">' +
             '<div class="fcp-result-player"><small>PLAYER</small><b id="fcp-result-player">—</b></div>' +
             '<div><small>MARKET</small><b id="fcp-result-market">—</b></div>' +
@@ -3830,7 +3836,7 @@
         '<section class="fcp-section">' +
           '<h3>Condition</h3>' +
           '<div class="fcp-condition-chips">' +
-            '<span>Silver only</span>' +
+            '<span id="fcp-cond-quality">' + quickFlipQualityLabel() + ' only</span>' +
             '<span id="fcp-cond-profit">Target +' + state.quickFlipPreferredProfit + ' · floor +' + state.minProfit + '</span>' +
             '<span id="fcp-cond-bid">' + (state.autoBid ? 'Auto bid / rebid' : 'Bid off') + '</span>' +
             '<span id="fcp-cond-buy">' + (state.autoBuyNow ? 'Auto Buy Now' : 'Buy Now off') + '</span>' +
@@ -3947,7 +3953,7 @@
         stop('Stopped by user');
       } else {
         if (!state.quickFlip || !state.quickFlip.candidate) {
-          log('Scan Player first so FC+ can choose a Silver Quickflip candidate');
+          log('Scan Player first so FC+ can choose a Quick Flip candidate');
           return;
         }
         start();
@@ -3979,6 +3985,25 @@
 
     Array.from(root.querySelectorAll('input')).forEach(function (input) {
       input.addEventListener('change', function () {
+        if (input.name === 'fcp-quality') {
+          if (state.running) {
+            renderQuickFlip();
+            log('Stop Auto Trade before changing Quick Flip quality');
+            return;
+          }
+          state.quickFlipQuality = lower(input.value || 'silver');
+          state.quickFlip.candidate = null;
+          state.quickFlip.scannedAt = 0;
+          state.quickFlip.scannedListings = 0;
+          state.quickFlip.uniquePlayers = 0;
+          state.quickFlip.checkedPlayers = 0;
+          state.quickFlip.status = 'Ready to scan ' + quickFlipQualityLabel() + ' players';
+          saveSettings();
+          render();
+          log('QUICK FLIP · quality changed to ' + quickFlipQualityLabel());
+          return;
+        }
+
         if (!state.running) readUI();
         if (input.id === 'fcp-altpositions' || input.id === 'fcp-cardprices') refreshVisibleAltPositions();
         var hs = root.querySelector('#fcp-headstate');
@@ -3989,7 +4014,7 @@
 
     render();
     renderSbcPanel();
-    log('Ready · Silver Quickflip workflow loaded');
+    log('Ready · FC+ Quick Flip workflow loaded');
 
     installNativeInteractionBridge();
     installPlayerCardEnhancer();
