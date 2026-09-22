@@ -1978,13 +1978,29 @@
       var minBin = bins[0] || 0;
       var minBid = rows.map(function (x) { return x.currentBid || x.startPrice; }).filter(Boolean)
         .sort(function (a, b) { return a - b; })[0] || 0;
-      var netSale = Math.floor(stable * 0.95);
-      var maxBid = quickFlipEntryFor(stable, state.quickFlipPreferredProfit);
+      var targetInfo = bestQuickFlipTarget(stable, rows);
+      var netSale = targetInfo.netSale;
+
+      if (!targetInfo.floorPossible) {
+        throw new Error(
+          'EA minimum ' + (targetInfo.priceFloor ? targetInfo.priceFloor.toLocaleString() : 'unknown') +
+          ' leaves only ' + (targetInfo.maxPossibleProfit >= 0 ? '+' : '') +
+          targetInfo.maxPossibleProfit.toLocaleString() +
+          ' max profit; below floor +' + state.minProfit.toLocaleString()
+        );
+      }
+
+      var activeTarget = targetInfo.preferredPossible
+        ? targetInfo.preferredTarget
+        : state.minProfit;
+      var maxBid = targetInfo.preferredPossible
+        ? targetInfo.preferredEntry
+        : targetInfo.floorEntry;
 
       var immediate = rows.filter(function (x) {
         var bid = x.currentBid || x.startPrice;
-        return (x.buyNow > 0 && x.buyNow <= maxBid) ||
-          (bid > 0 && bid <= maxBid && x.timeSeconds <= 120);
+        return (x.buyNow > 0 && (!targetInfo.priceFloor || x.buyNow >= targetInfo.priceFloor) && x.buyNow <= maxBid) ||
+          (bid > 0 && (!targetInfo.priceFloor || bid >= targetInfo.priceFloor) && bid <= maxBid && x.timeSeconds <= 120);
       }).sort(function (a, b) {
         var ae = Math.min(a.buyNow || Infinity, a.currentBid || a.startPrice || Infinity);
         var be = Math.min(b.buyNow || Infinity, b.currentBid || b.startPrice || Infinity);
@@ -2011,6 +2027,9 @@
         stableBIN: stable,
         minBid: minBid,
         maxBid: maxBid,
+        priceFloor: targetInfo.priceFloor,
+        priceCeiling: targetInfo.priceCeiling,
+        activeTargetProfit: activeTarget,
         netSale: netSale,
         expectedProfit: maxBid ? netSale - maxBid : 0,
         currentEntryProfit: currentEntry ? netSale - currentEntry : 0,
@@ -3077,6 +3096,7 @@
     var status = document.querySelector('#fcp-result-status');
     var player = document.querySelector('#fcp-result-player');
     var market = document.querySelector('#fcp-result-market');
+    var priceFloor = document.querySelector('#fcp-result-floor');
     var maxBid = document.querySelector('#fcp-result-maxbid');
     var profit = document.querySelector('#fcp-result-profit');
     var scanMeta = document.querySelector('#fcp-result-meta');
@@ -3084,6 +3104,7 @@
     if (status) status.textContent = q.status || ('Ready to scan ' + quickFlipQualityLabel() + ' players');
     if (player) player.textContent = candidate ? (candidate.name + ' · ' + candidate.rating) : '—';
     if (market) market.textContent = candidate && candidate.stableBIN ? candidate.stableBIN.toLocaleString() : '—';
+    if (priceFloor) priceFloor.textContent = candidate && candidate.priceFloor ? candidate.priceFloor.toLocaleString() : '—';
     if (maxBid) maxBid.textContent = candidate && candidate.maxBid ? candidate.maxBid.toLocaleString() : '—';
     if (profit) {
       if (candidate && Number.isFinite(candidate.expectedProfit)) {
@@ -4368,7 +4389,8 @@
           '<div class="fcp-result-grid">' +
             '<div class="fcp-result-player"><small>PLAYER</small><b id="fcp-result-player">—</b></div>' +
             '<div><small>MARKET</small><b id="fcp-result-market">—</b></div>' +
-            '<div><small>MAX BID</small><b id="fcp-result-maxbid">—</b></div>' +
+            '<div><small>EA MIN</small><b id="fcp-result-floor">—</b></div>' +
+            '<div><small>MAX ENTRY</small><b id="fcp-result-maxbid">—</b></div>' +
             '<div><small>TARGET PROFIT</small><b id="fcp-result-profit">—</b></div>' +
           '</div>' +
           '<div id="fcp-result-meta" class="fcp-result-meta">No scan yet</div>' +
@@ -4424,7 +4446,7 @@
               '<div><small>MIN BIN</small><b id="fcp-minbin">—</b></div>' +
               '<div><small>STABLE BIN</small><b id="fcp-bin">—</b></div>' +
               '<div><small>MIN BID</small><b id="fcp-bid">—</b></div>' +
-              '<div><small>MAX BID</small><b id="fcp-maxbid">—</b></div>' +
+              '<div><small>MAX ENTRY</small><b id="fcp-maxbid">—</b></div>' +
             '</div>' +
             '<div class="fcp-sourcebar">' +
               '<span>FUT.GG <b id="fcp-futgg">—</b></span>' +
