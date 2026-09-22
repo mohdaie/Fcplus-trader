@@ -3482,7 +3482,7 @@
     state.lastQuickFlipDecision = '';
     state.lastQuickFlipDecisionAt = 0;
     state.currentTarget = {
-      strategy: 'silver_quick_flip',
+      strategy: 'fcplus_quick_flip',
       definitionId: candidate.definitionId,
       name: candidate.name,
       rating: candidate.rating,
@@ -4250,6 +4250,15 @@
     '#' + APP_ID + ' .fcp-method-title-row{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}' +
     '#' + APP_ID + ' .fcp-method-title-row h2{margin:0;color:#fff;font-size:22px;line-height:1.15}' +
     '#' + APP_ID + ' .fcp-method-title-row p{margin:5px 0 0;max-width:340px;color:#ffffff78;font-size:11px;line-height:1.4}' +
+    '#' + APP_ID + ' .fcp-quality-picker{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-top:13px}' +
+    '#' + APP_ID + ' .fcp-quality-picker label{position:relative;min-width:0}' +
+    '#' + APP_ID + ' .fcp-quality-picker input{position:absolute;opacity:0;pointer-events:none}' +
+    '#' + APP_ID + ' .fcp-quality-picker span{display:flex;align-items:center;justify-content:center;min-height:36px;padding:7px 4px;border-radius:10px;border:1px solid #ffffff18;background:#172431;color:#d8e1e7;font-size:9px;font-weight:850}' +
+    '#' + APP_ID + ' .fcp-quality-picker input:checked+span{border-color:#00d978;background:#123d2c;color:#fff;box-shadow:inset 0 0 0 1px #00d97855}' +
+    '#' + APP_ID + ' .fcp-quality-picker label:nth-child(1) input:checked+span{border-color:#cd7f32;background:#46311f}' +
+    '#' + APP_ID + ' .fcp-quality-picker label:nth-child(2) input:checked+span{border-color:#cbd5df;background:#33404d}' +
+    '#' + APP_ID + ' .fcp-quality-picker label:nth-child(3) input:checked+span{border-color:#f2cf5b;background:#4a4020}' +
+    '#' + APP_ID + ' .fcp-quality-picker label:nth-child(4) input:checked+span{border-color:#b886ff;background:#34264a}' +
     '#' + APP_ID + ' .fcp-primary{width:100%;height:48px;margin-top:13px;border:0;border-radius:11px;background:#00d978;color:#07150e;font-size:13px;font-weight:950}' +
     '#' + APP_ID + ' .fcp-primary:disabled{opacity:.55}' +
     '#' + APP_ID + ' .fcp-section-title{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}' +
@@ -4287,6 +4296,10 @@
     '#' + APP_ID + ' .fcp-sbc-players{display:flex;flex-direction:column;gap:6px}' +
     '#' + APP_ID + ' .fcp-sbc-player{display:flex;justify-content:space-between;gap:8px;padding:8px 9px;border-radius:9px;background:#172431}' +
     '#' + APP_ID + ' .fcp-sbc-player b{color:#fff;font-size:10px;line-height:1.45;white-space:normal;overflow-wrap:anywhere}' +
+    '#' + APP_ID + ' .fcp-sbc-player-actions{display:flex;align-items:center;gap:7px;flex:0 0 auto}' +
+    '#' + APP_ID + ' .fcp-sbc-player-actions span{color:#75d8ff;font-size:9px;white-space:nowrap}' +
+    '#' + APP_ID + ' .fcp-sbc-quickscan{min-width:48px;height:28px;padding:0 8px;border:1px solid #00d97866;border-radius:8px;background:#123d2c;color:#8fffc5;font-size:8px;font-weight:900}' +
+    '#' + APP_ID + ' .fcp-sbc-quickscan:disabled{opacity:.5}' +
     '#' + APP_ID + ' .fcp-sbc-player span{color:#75d8ff;font-size:9px;white-space:nowrap}' +
     '#' + APP_ID + ' .fcp-settings-block{padding:14px 0;border-bottom:1px solid #ffffff0e}' +
     '#' + APP_ID + ' .fcp-settings-block:last-child{border-bottom:0;padding-bottom:0}' +
