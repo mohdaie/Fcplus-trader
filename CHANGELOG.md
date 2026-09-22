@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.5
+
+- Fixed **EA Fast BIN** and **Smart Price** unexpectedly leaving the FC Web App.
+- Removed browser-history navigation from price scanning.
+- EA Fast BIN now uses the Web App's in-place read-only market search service.
+- Improved current search-criteria detection by supporting both `viewmodel` and `_viewmodel`.
+- If direct EA pricing is unavailable, FC+ stays on Search Results and uses visible listings as a low-confidence fallback instead of navigating away.
+
 ## 0.3.4
 
 - Added **Smart Price** mode.
