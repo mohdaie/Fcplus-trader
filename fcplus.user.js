@@ -1614,7 +1614,7 @@
     }
 
     if (start) {
-      start.textContent = state.running ? 'STOP EVERYTHING' : 'START AUTO';
+      start.textContent = state.running ? 'STOP AUTO TRADE' : 'AUTO TRADE';
       start.dataset.on = state.running ? '1' : '0';
     }
 
@@ -2614,6 +2614,44 @@
     '.fcplus-card-price .fcplus-price-dots{font-size:8px!important;letter-spacing:1px!important}' +
     '.phone .fcplus-card-price{bottom:-14px!important;min-width:46px!important;height:15px!important;padding:0 6px!important;border-radius:4px!important;font-size:8px!important}'
   );
+
+
+  GM_addStyle(
+    '#' + APP_ID + ' .fcp-eyebrow{margin-bottom:6px;color:#75d8ff;font-size:9px;font-weight:900;letter-spacing:.12em}' +
+    '#' + APP_ID + ' .fcp-method-card{background:linear-gradient(145deg,#2a4051,#233545)}' +
+    '#' + APP_ID + ' .fcp-method-title-row{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}' +
+    '#' + APP_ID + ' .fcp-method-title-row h2{margin:0;color:#fff;font-size:22px;line-height:1.15}' +
+    '#' + APP_ID + ' .fcp-method-title-row p{margin:5px 0 0;max-width:340px;color:#ffffff78;font-size:11px;line-height:1.4}' +
+    '#' + APP_ID + ' .fcp-primary{width:100%;height:48px;margin-top:13px;border:0;border-radius:11px;background:#00d978;color:#07150e;font-size:13px;font-weight:950}' +
+    '#' + APP_ID + ' .fcp-primary:disabled{opacity:.55}' +
+    '#' + APP_ID + ' .fcp-section-title{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}' +
+    '#' + APP_ID + ' .fcp-section-title h3{margin:0}' +
+    '#' + APP_ID + ' .fcp-section-title>span{color:#ffffff6c;font-size:9px}' +
+    '#' + APP_ID + ' .fcp-result-status{margin-bottom:9px;padding:9px 10px;border-radius:9px;background:#172431;color:#dce6ed;font-size:10px}' +
+    '#' + APP_ID + ' .fcp-result-grid{display:grid;grid-template-columns:1.6fr 1fr;gap:8px}' +
+    '#' + APP_ID + ' .fcp-result-grid>div{min-width:0;padding:10px;border-radius:10px;background:#172431}' +
+    '#' + APP_ID + ' .fcp-result-grid small{display:block;color:#ffffff65;font-size:8px}' +
+    '#' + APP_ID + ' .fcp-result-grid b{display:block;margin-top:3px;color:#fff;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
+    '#' + APP_ID + ' .fcp-result-player{grid-column:1/-1}' +
+    '#' + APP_ID + ' .fcp-result-player b{font-size:17px}' +
+    '#' + APP_ID + ' .fcp-result-meta{margin-top:8px;color:#ffffff62;font-size:9px}' +
+    '#' + APP_ID + ' .fcp-condition-chips{display:flex;flex-wrap:wrap;gap:7px}' +
+    '#' + APP_ID + ' .fcp-condition-chips span{padding:7px 9px;border-radius:99px;background:#172431;border:1px solid #ffffff12;color:#eaf1f5;font-size:9px}' +
+    '#' + APP_ID + ' .fcp-auto-card{background:#223847}' +
+    '#' + APP_ID + ' .fcp-fold{margin-bottom:14px;border-radius:15px;background:#263746;border:1px solid #ffffff12;overflow:hidden;box-shadow:0 10px 28px #0002}' +
+    '#' + APP_ID + ' .fcp-fold summary{list-style:none;display:flex;align-items:center;justify-content:space-between;min-height:52px;padding:0 14px;color:#fff;font-size:15px;font-weight:800;cursor:pointer;user-select:none}' +
+    '#' + APP_ID + ' .fcp-fold summary::-webkit-details-marker{display:none}' +
+    '#' + APP_ID + ' .fcp-fold summary b{color:#ffffff70;font-size:24px;font-weight:400;transition:transform .18s ease}' +
+    '#' + APP_ID + ' .fcp-fold[open] summary b{transform:rotate(90deg)}' +
+    '#' + APP_ID + ' .fcp-fold-body{padding:0 14px 14px;border-top:1px solid #ffffff0e}' +
+    '#' + APP_ID + ' .fcp-fold-body>.fcp-market{margin-top:14px}' +
+    '#' + APP_ID + ' .fcp-settings-block{padding:14px 0;border-bottom:1px solid #ffffff0e}' +
+    '#' + APP_ID + ' .fcp-settings-block:last-child{border-bottom:0;padding-bottom:0}' +
+    '#' + APP_ID + ' .fcp-settings-block h3{margin:0 0 10px}' +
+    '#' + APP_ID + ' .fcp-diagnostics #fcp-log{max-height:300px;min-height:120px;margin-top:0}' +
+    '#' + APP_ID + ' .fcp-diagnostics #fcp-log div{padding:6px 2px;line-height:1.45}'
+  );
+
 
   function boot() {
     if (!document.body) {
