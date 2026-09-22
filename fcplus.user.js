@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC+ Auto Trader Mobile
 // @namespace    https://fcplus.local/
-// @version      0.3.5
+// @version      0.4.0
 // @description  Mobile FC Web App market scanner, auto bid/rebid, auto relist, and hard trading limits.
 // @homepageURL  https://github.com/mohdaie/Fcplus-trader
 // @updateURL    https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var APP_ID = 'fcplus-auto-v035';
+  var APP_ID = 'fcplus-auto-v040';
   if (document.getElementById(APP_ID)) return;
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -639,8 +639,13 @@
       return;
     }
     if (state.smartScanning || state.fastScanning || state.scanningAll) return;
-    if (pageType() !== 'results') {
-      log('Open Search Results first');
+    var smartPage = pageType();
+    if (smartPage !== 'results' && smartPage !== 'details') {
+      log('Open Search Results or a market Item Details page first');
+      return;
+    }
+    if (!getActiveSearchCriteria()) {
+      log('FC+ cannot find the active EA market search');
       return;
     }
 
@@ -1156,6 +1161,9 @@
 
     if (trades) trades.textContent = state.trades + '/' + state.maxTrades;
     if (profit) profit.textContent = state.daily.estimatedProfit.toLocaleString();
+    var headState = document.querySelector('#fcp-headstate');
+    var dry = document.querySelector('#fcp-dry');
+    if (headState && dry) headState.textContent = dry.checked ? 'DRY' : 'LIVE';
     renderMarket();
   }
 
@@ -1467,58 +1475,191 @@
     render();
   }
 
+  function openNativePanel() {
+    var root = document.getElementById(APP_ID);
+    if (!root) return;
+    root.classList.add('fcp-open');
+    var body = root.querySelector('#fcp-body');
+    if (body) body.style.display = '';
+    render();
+  }
+
+  function closeNativePanel() {
+    var root = document.getElementById(APP_ID);
+    if (root) root.classList.remove('fcp-open');
+  }
+
+  function exactTextNode(label) {
+    var nodes = Array.from(document.querySelectorAll('span,div,p,label,a,button'));
+    var wanted = lower(label);
+    for (var i = 0; i < nodes.length; i++) {
+      if (!visible(nodes[i])) continue;
+      if (lower(nodes[i].textContent || '') === wanted) return nodes[i];
+    }
+    return null;
+  }
+
+  function clickableAncestor(el) {
+    var node = el;
+    for (var i = 0; i < 6 && node; i++, node = node.parentElement) {
+      if (!node || !node.getBoundingClientRect) continue;
+      var role = node.getAttribute ? node.getAttribute('role') : '';
+      if (node.tagName === 'BUTTON' || node.tagName === 'A' || role === 'button') return node;
+      var r = node.getBoundingClientRect();
+      if (r.height >= 44 && r.height <= 100 && r.width >= 45 && r.width <= 180) return node;
+    }
+    return el;
+  }
+
+  function findBottomNav() {
+    var labels = ['Home', 'Squads', 'Transfers', 'Store', 'Club'];
+    var hits = labels.map(exactTextNode).filter(Boolean);
+    if (hits.length < 3) return null;
+
+    var node = hits[0];
+    for (var depth = 0; depth < 7 && node; depth++, node = node.parentElement) {
+      var txt = lower(node.textContent || '');
+      var count = labels.filter(function (x) { return txt.indexOf(lower(x)) >= 0; }).length;
+      var r = node.getBoundingClientRect ? node.getBoundingClientRect() : null;
+      if (count >= 3 && r && r.top > window.innerHeight * 0.70 && r.height < 150) return node;
+    }
+    return null;
+  }
+
+  function installNativeNav() {
+    if (document.getElementById('fcp-native-nav')) return;
+
+    var nav = findBottomNav();
+    if (!nav) return;
+
+    var item = document.createElement('button');
+    item.id = 'fcp-native-nav';
+    item.type = 'button';
+    item.innerHTML =
+      '<span class="fcp-nav-icon">F+</span>' +
+      '<span class="fcp-nav-label">FC+</span>';
+    item.addEventListener('click', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      openNativePanel();
+    });
+
+    nav.appendChild(item);
+  }
+
+  function nativeActionAnchor() {
+    var bio = exactTextNode('Player Bio');
+    if (bio) return clickableAncestor(bio);
+    var compare = exactTextNode('Compare Price');
+    if (compare) return clickableAncestor(compare);
+    var list = exactTextNode('List on Transfer Market');
+    if (list) return clickableAncestor(list);
+    return null;
+  }
+
+  function installPlayerAction() {
+    if (document.getElementById('fcp-player-smart')) return;
+
+    var t = pageText();
+    if (t.indexOf('player details') < 0 && t.indexOf('item details') < 0) return;
+
+    var anchor = nativeActionAnchor();
+    if (!anchor || !anchor.parentElement) return;
+
+    var row = document.createElement('button');
+    row.id = 'fcp-player-smart';
+    row.type = 'button';
+    row.className = 'fcp-native-action';
+    row.innerHTML =
+      '<span>FC+ Smart Price</span>' +
+      '<small>FUT.GG + EA live validation</small>' +
+      '<b>›</b>';
+
+    row.addEventListener('click', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      openNativePanel();
+      setTimeout(function () {
+        smartPriceScan();
+      }, 80);
+    });
+
+    anchor.parentElement.insertBefore(row, anchor);
+  }
+
+  function nativeUiHeartbeat() {
+    installNativeNav();
+    installPlayerAction();
+  }
+
   function createUI() {
     var root = document.createElement('section');
     root.id = APP_ID;
     root.innerHTML =
-      '<div class="fcp-head"><div><b>FC+ AUTO</b><small>v0.3.5 · non-navigation scan</small></div><button id="fcp-min" type="button">−</button></div>' +
-      '<div id="fcp-body">' +
-        '<div class="fcp-top"><span id="fcp-state" data-on="0">STOPPED</span><span>Trades <b id="fcp-trades">0/' + state.maxTrades + '</b></span></div>' +
-        '<div class="fcp-market">' +
-          '<div><small>MIN BIN</small><b id="fcp-minbin">—</b></div>' +
-          '<div><small>STABLE BIN</small><b id="fcp-bin">—</b></div>' +
-          '<div><small>MIN BID</small><b id="fcp-bid">—</b></div>' +
-          '<div><small>MAX BID</small><b id="fcp-maxbid">—</b></div>' +
-        '</div>' +
-        '<div class="fcp-sourcebar">' +
-          '<span>FUT.GG <b id="fcp-futgg">—</b></span>' +
-          '<span>SOURCE <b id="fcp-source">PAGE</b></span>' +
-          '<span>CONF <b id="fcp-confidence">—</b></span>' +
-        '</div>' +
-        '<div id="fcp-scaninfo" class="fcp-scaninfo">Not scanned</div>' +
-        '<button id="fcp-smartprice" class="fcp-smartprice" type="button">SMART PRICE</button>' +
-        '<div class="fcp-fastrow">' +
-          '<button id="fcp-fastbin" type="button">EA FAST BIN</button>' +
-          '<button id="fcp-scanall" type="button">FULL PAGE SCAN</button>' +
-        '</div>' +
-        '<div class="fcp-scanrow">' +
-          '<label>FULL SCAN PAGE CAP<input id="fcp-maxscanpages" type="number" inputmode="numeric" min="1" max="100" value="' + state.maxScanPages + '"></label>' +
-          '<span>Smart Price: FUT.GG reference + in-place EA validation. No page navigation.</span>' +
-        '</div>' +
-        '<div class="fcp-grid three">' +
-          '<label>MIN PROFIT<input id="fcp-minprofit" type="number" inputmode="numeric" value="' + state.minProfit + '"></label>' +
-          '<label>MAX BID CAP<input id="fcp-bidcap" type="number" inputmode="numeric" value="' + (state.maxBidCap || '') + '" placeholder="Auto"></label>' +
-          '<label>MAX BIN BUY<input id="fcp-maxbin" type="number" inputmode="numeric" value="' + (state.maxBinBuy || '') + '" placeholder="Off"></label>' +
-        '</div>' +
-        '<div class="fcp-switches">' +
-          '<label><input id="fcp-autobid" type="checkbox"' + (state.autoBid ? ' checked' : '') + '> Auto bid/rebid</label>' +
-          '<label><input id="fcp-autobin" type="checkbox"' + (state.autoBuyNow ? ' checked' : '') + '> Auto Buy Now</label>' +
-          '<label><input id="fcp-autosell" type="checkbox"' + (state.autoSell ? ' checked' : '') + '> Auto relist</label>' +
-          '<label><input id="fcp-dry" type="checkbox"' + (state.dryRun ? ' checked' : '') + '> Dry run</label>' +
-        '</div>' +
-        '<div class="fcp-grid">' +
-          '<label>SESSION MIN<input id="fcp-session" type="number" inputmode="numeric" value="' + state.sessionMinutes + '"></label>' +
-          '<label>MAX TRADES<input id="fcp-maxtrades" type="number" inputmode="numeric" value="' + state.maxTrades + '"></label>' +
-          '<label>DELAY SEC<input id="fcp-delay" type="number" inputmode="decimal" step="0.5" value="' + (state.pollMs / 1000) + '"></label>' +
-          '<label>DAILY TARGET<input id="fcp-dailytarget" type="number" inputmode="numeric" value="' + state.dailyTarget + '"></label>' +
-        '</div>' +
-        '<div class="fcp-profit"><span>Estimated listed profit today</span><b><span id="fcp-profit">' + state.daily.estimatedProfit.toLocaleString() + '</span> coins</b></div>' +
-        '<div id="fcp-action">Ready</div>' +
-        '<button id="fcp-start" class="fcp-start" data-on="0" type="button">START AUTO</button>' +
-        '<div id="fcp-log"></div>' +
+      '<div class="fcp-native-head">' +
+        '<button id="fcp-close" type="button">‹</button>' +
+        '<div><b>FC+ Trader</b><small>v0.4.0 · integrated market tools</small></div>' +
+        '<span id="fcp-headstate">DRY</span>' +
+      '</div>' +
+      '<div id="fcp-body" class="fcp-native-body">' +
+        '<section class="fcp-section">' +
+          '<div class="fcp-top"><span id="fcp-state" data-on="0">STOPPED</span><span>Trades <b id="fcp-trades">0/' + state.maxTrades + '</b></span></div>' +
+          '<div class="fcp-market">' +
+            '<div><small>MIN BIN</small><b id="fcp-minbin">—</b></div>' +
+            '<div><small>STABLE BIN</small><b id="fcp-bin">—</b></div>' +
+            '<div><small>MIN BID</small><b id="fcp-bid">—</b></div>' +
+            '<div><small>MAX BID</small><b id="fcp-maxbid">—</b></div>' +
+          '</div>' +
+          '<div class="fcp-sourcebar">' +
+            '<span>FUT.GG <b id="fcp-futgg">—</b></span>' +
+            '<span>SOURCE <b id="fcp-source">PAGE</b></span>' +
+            '<span>CONF <b id="fcp-confidence">—</b></span>' +
+          '</div>' +
+          '<div id="fcp-scaninfo" class="fcp-scaninfo">Not scanned</div>' +
+          '<button id="fcp-smartprice" class="fcp-smartprice" type="button">SMART PRICE</button>' +
+          '<div class="fcp-fastrow">' +
+            '<button id="fcp-fastbin" type="button">EA FAST BIN</button>' +
+            '<button id="fcp-scanall" type="button">FULL PAGE SCAN</button>' +
+          '</div>' +
+        '</section>' +
+
+        '<section class="fcp-section">' +
+          '<h3>Trading</h3>' +
+          '<div class="fcp-grid three">' +
+            '<label>MIN PROFIT<input id="fcp-minprofit" type="number" inputmode="numeric" value="' + state.minProfit + '"></label>' +
+            '<label>MAX BID CAP<input id="fcp-bidcap" type="number" inputmode="numeric" value="' + (state.maxBidCap || '') + '" placeholder="Auto"></label>' +
+            '<label>MAX BIN BUY<input id="fcp-maxbin" type="number" inputmode="numeric" value="' + (state.maxBinBuy || '') + '" placeholder="Off"></label>' +
+          '</div>' +
+          '<div class="fcp-switches">' +
+            '<label><span>Auto bid / rebid</span><input id="fcp-autobid" type="checkbox"' + (state.autoBid ? ' checked' : '') + '></label>' +
+            '<label><span>Auto Buy Now</span><input id="fcp-autobin" type="checkbox"' + (state.autoBuyNow ? ' checked' : '') + '></label>' +
+            '<label><span>Auto relist</span><input id="fcp-autosell" type="checkbox"' + (state.autoSell ? ' checked' : '') + '></label>' +
+            '<label><span>Dry run</span><input id="fcp-dry" type="checkbox"' + (state.dryRun ? ' checked' : '') + '></label>' +
+          '</div>' +
+        '</section>' +
+
+        '<section class="fcp-section">' +
+          '<h3>Limits</h3>' +
+          '<div class="fcp-grid">' +
+            '<label>SESSION MIN<input id="fcp-session" type="number" inputmode="numeric" value="' + state.sessionMinutes + '"></label>' +
+            '<label>MAX TRADES<input id="fcp-maxtrades" type="number" inputmode="numeric" value="' + state.maxTrades + '"></label>' +
+            '<label>DELAY SEC<input id="fcp-delay" type="number" inputmode="decimal" step="0.5" value="' + (state.pollMs / 1000) + '"></label>' +
+            '<label>DAILY TARGET<input id="fcp-dailytarget" type="number" inputmode="numeric" value="' + state.dailyTarget + '"></label>' +
+            '<label>FULL SCAN PAGE CAP<input id="fcp-maxscanpages" type="number" inputmode="numeric" min="1" max="100" value="' + state.maxScanPages + '"></label>' +
+          '</div>' +
+        '</section>' +
+
+        '<section class="fcp-section">' +
+          '<div class="fcp-profit"><span>Estimated listed profit today</span><b><span id="fcp-profit">' + state.daily.estimatedProfit.toLocaleString() + '</span> coins</b></div>' +
+          '<div id="fcp-action">Ready</div>' +
+          '<button id="fcp-start" class="fcp-start" data-on="0" type="button">START AUTO</button>' +
+          '<div id="fcp-log"></div>' +
+        '</section>' +
       '</div>';
 
     document.documentElement.appendChild(root);
+
+    root.querySelector('#fcp-close').addEventListener('click', closeNativePanel);
 
     root.querySelector('#fcp-start').addEventListener('click', function () {
       if (state.running) stop('Stopped by user'); else start();
@@ -1539,64 +1680,72 @@
       scanAllMarketPages();
     });
 
-    root.querySelector('#fcp-min').addEventListener('click', function (e) {
-      var body = root.querySelector('#fcp-body');
-      var hidden = body.style.display === 'none';
-      body.style.display = hidden ? '' : 'none';
-      e.currentTarget.textContent = hidden ? '−' : '+';
-    });
-
     Array.from(root.querySelectorAll('input')).forEach(function (input) {
       input.addEventListener('change', function () {
         if (!state.running) readUI();
+        var hs = root.querySelector('#fcp-headstate');
+        if (hs) hs.textContent = root.querySelector('#fcp-dry').checked ? 'DRY' : 'LIVE';
       });
     });
 
     render();
-    log('Ready · set EA player search first');
+    log('Ready · FC+ is integrated into the EA UI');
+
+    nativeUiHeartbeat();
+    setInterval(nativeUiHeartbeat, 900);
   }
 
   GM_addStyle(
-    '#' + APP_ID + '{position:fixed;right:8px;bottom:82px;z-index:2147483647;width:min(350px,calc(100vw - 16px));background:#0b1014;color:#f4f7f9;border:1px solid #ffffff1f;border-radius:16px;box-shadow:0 18px 55px #0009;overflow:hidden;font-family:system-ui,-apple-system,Segoe UI,sans-serif;font-size:12px}' +
+    '#' + APP_ID + '{display:none;position:fixed;inset:0 0 68px 0;z-index:2147483000;background:#1f2d3b;color:#f4f7f9;font-family:system-ui,-apple-system,Segoe UI,sans-serif;font-size:12px;overflow:hidden}' +
+    '#' + APP_ID + '.fcp-open{display:block}' +
     '#' + APP_ID + ' *{box-sizing:border-box}' +
-    '#' + APP_ID + ' .fcp-head{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:#151c22;border-bottom:1px solid #ffffff12}' +
-    '#' + APP_ID + ' .fcp-head b{font-size:14px;letter-spacing:.06em}' +
-    '#' + APP_ID + ' .fcp-head small{display:block;margin-top:2px;color:#ffffff69;font-size:9px}' +
-    '#' + APP_ID + ' #fcp-min{width:32px;height:32px;border:0;border-radius:9px;background:#ffffff10;color:#fff;font-size:20px}' +
-    '#' + APP_ID + ' #fcp-body{padding:10px}' +
-    '#' + APP_ID + ' .fcp-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}' +
-    '#' + APP_ID + ' #fcp-state{padding:4px 8px;border-radius:99px;background:#ffffff10;color:#ffffff80;font-weight:900;font-size:10px}' +
-    '#' + APP_ID + ' #fcp-state[data-on="1"]{background:#00f58b22;color:#75ffb8}' +
-    '#' + APP_ID + ' .fcp-market{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:7px}' +
-    '#' + APP_ID + ' .fcp-market>div{padding:8px;border-radius:9px;background:#ffffff08;min-width:0}' +
-    '#' + APP_ID + ' .fcp-market small{display:block;color:#ffffff65;font-size:8px}' +
-    '#' + APP_ID + ' .fcp-market b{display:block;margin-top:2px;font-size:13px;overflow:hidden;text-overflow:ellipsis}' +
-    '#' + APP_ID + ' .fcp-sourcebar{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:7px}' +
-    '#' + APP_ID + ' .fcp-sourcebar span{padding:6px;border-radius:7px;background:#ffffff07;color:#ffffff65;font-size:8px;min-width:0}' +
+    '#' + APP_ID + ' .fcp-native-head{height:74px;display:grid;grid-template-columns:44px 1fr auto;gap:10px;align-items:center;padding:12px 16px;background:#101b29;border-bottom:1px solid #ffffff18}' +
+    '#' + APP_ID + ' #fcp-close{width:40px;height:40px;border:0;background:transparent;color:#fff;font-size:34px;line-height:1}' +
+    '#' + APP_ID + ' .fcp-native-head b{font-size:22px;font-weight:600}' +
+    '#' + APP_ID + ' .fcp-native-head small{display:block;margin-top:2px;color:#ffffff70;font-size:10px}' +
+    '#' + APP_ID + ' #fcp-headstate{padding:5px 8px;border-radius:5px;background:#ffffff13;color:#fff;font-size:9px;font-weight:800}' +
+    '#' + APP_ID + ' .fcp-native-body{height:calc(100% - 74px);overflow:auto;padding:16px 14px 28px;background:linear-gradient(180deg,#233748,#182a38)}' +
+    '#' + APP_ID + ' .fcp-section{margin-bottom:14px;padding:14px;border-radius:15px;background:#263746;border:1px solid #ffffff12;box-shadow:0 10px 28px #0002}' +
+    '#' + APP_ID + ' .fcp-section h3{margin:0 0 10px;font-size:17px;font-weight:600}' +
+    '#' + APP_ID + ' .fcp-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}' +
+    '#' + APP_ID + ' #fcp-state{padding:5px 9px;border-radius:99px;background:#ffffff12;color:#ffffff80;font-weight:900;font-size:10px}' +
+    '#' + APP_ID + ' #fcp-state[data-on="1"]{background:#00ef8830;color:#83ffc3}' +
+    '#' + APP_ID + ' .fcp-market{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}' +
+    '#' + APP_ID + ' .fcp-market>div{padding:11px;border-radius:10px;background:#172431;min-width:0}' +
+    '#' + APP_ID + ' .fcp-market small{display:block;color:#ffffff70;font-size:9px}' +
+    '#' + APP_ID + ' .fcp-market b{display:block;margin-top:3px;font-size:18px;overflow:hidden;text-overflow:ellipsis}' +
+    '#' + APP_ID + ' .fcp-sourcebar{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px;margin-bottom:8px}' +
+    '#' + APP_ID + ' .fcp-sourcebar span{padding:7px;border-radius:8px;background:#172431;color:#ffffff65;font-size:8px;min-width:0}' +
     '#' + APP_ID + ' .fcp-sourcebar b{display:block;margin-top:2px;color:#fff;font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
-    '#' + APP_ID + ' .fcp-scaninfo{padding:6px 8px;border-radius:8px;background:#ffffff07;color:#ffffff72;font-size:9px}' +
-    '#' + APP_ID + ' .fcp-smartprice{width:100%;height:39px;margin-top:7px;border:0;border-radius:9px;background:#00ef88;color:#03120b;font-size:11px;font-weight:950}' +
+    '#' + APP_ID + ' .fcp-scaninfo{padding:8px 9px;border-radius:8px;background:#172431;color:#ffffff75;font-size:9px}' +
+    '#' + APP_ID + ' .fcp-smartprice{width:100%;height:44px;margin-top:9px;border:0;border-radius:9px;background:#00d978;color:#07150e;font-size:12px;font-weight:900}' +
     '#' + APP_ID + ' .fcp-smartprice:disabled{opacity:.55}' +
-    '#' + APP_ID + ' .fcp-fastrow{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:7px}' +
-    '#' + APP_ID + ' .fcp-fastrow button{height:37px;border:0;border-radius:8px;font-size:10px;font-weight:900}' +
-    '#' + APP_ID + ' #fcp-fastbin{background:#00ef88;color:#03120b}' +
-    '#' + APP_ID + ' #fcp-scanall{background:#d9e4ec;color:#0b1014}' +
+    '#' + APP_ID + ' .fcp-fastrow{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}' +
+    '#' + APP_ID + ' .fcp-fastrow button{height:40px;border:1px solid #ffffff18;border-radius:9px;background:#172431;color:#fff;font-size:10px;font-weight:800}' +
     '#' + APP_ID + ' .fcp-fastrow button:disabled{opacity:.55}' +
-    '#' + APP_ID + ' .fcp-scanrow{display:grid;grid-template-columns:1fr 1.35fr;gap:7px;align-items:end;margin-top:7px}' +
-    '#' + APP_ID + ' .fcp-scanrow span{font-size:8px;line-height:1.35;color:#ffffff65;padding-bottom:4px}' +
-    '#' + APP_ID + ' .fcp-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:8px}' +
+    '#' + APP_ID + ' .fcp-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}' +
     '#' + APP_ID + ' .fcp-grid.three{grid-template-columns:1fr 1fr 1fr}' +
-    '#' + APP_ID + ' label{font-size:8px;color:#ffffff75;min-width:0}' +
-    '#' + APP_ID + ' input:not([type="checkbox"]){width:100%;margin-top:3px;padding:8px;border-radius:8px;border:1px solid #ffffff16;background:#171d23;color:#fff;font-size:12px;outline:none}' +
-    '#' + APP_ID + ' .fcp-switches{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:9px}' +
-    '#' + APP_ID + ' .fcp-switches label{display:flex;align-items:center;gap:6px;font-size:10px;color:#e6edf2}' +
-    '#' + APP_ID + ' .fcp-profit{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-top:9px;padding:8px;border-radius:9px;background:#ffffff07;font-size:9px;color:#ffffff80}' +
-    '#' + APP_ID + ' .fcp-profit b{color:#fff;font-size:10px;text-align:right}' +
-    '#' + APP_ID + ' #fcp-action{margin-top:8px;padding:8px;border-radius:9px;background:#ffffff08;color:#dce4e9;font-size:10px}' +
-    '#' + APP_ID + ' .fcp-start{width:100%;margin-top:8px;padding:12px;border:0;border-radius:10px;background:#00ef88;color:#03120b;font-weight:900;font-size:12px}' +
+    '#' + APP_ID + ' label{font-size:9px;color:#ffffff75;min-width:0}' +
+    '#' + APP_ID + ' input:not([type="checkbox"]){width:100%;margin-top:4px;padding:10px;border-radius:8px;border:1px solid #ffffff1a;background:#101a24;color:#fff;font-size:13px;outline:none}' +
+    '#' + APP_ID + ' .fcp-switches{margin-top:10px;border-top:1px solid #ffffff10}' +
+    '#' + APP_ID + ' .fcp-switches label{display:flex;justify-content:space-between;align-items:center;min-height:52px;border-bottom:1px solid #ffffff10;color:#fff;font-size:14px}' +
+    '#' + APP_ID + ' .fcp-switches input{width:22px;height:22px;accent-color:#00df7a}' +
+    '#' + APP_ID + ' .fcp-profit{display:flex;justify-content:space-between;gap:8px;align-items:center;padding:9px;border-radius:9px;background:#172431;font-size:10px;color:#ffffff80}' +
+    '#' + APP_ID + ' .fcp-profit b{color:#fff;font-size:11px;text-align:right}' +
+    '#' + APP_ID + ' #fcp-action{margin-top:9px;padding:9px;border-radius:9px;background:#172431;color:#dce4e9;font-size:10px}' +
+    '#' + APP_ID + ' .fcp-start{width:100%;margin-top:9px;padding:13px;border:0;border-radius:10px;background:#00d978;color:#06150d;font-weight:900;font-size:13px}' +
     '#' + APP_ID + ' .fcp-start[data-on="1"]{background:#ff5865;color:#fff}' +
-    '#' + APP_ID + ' #fcp-log{margin-top:8px;max-height:96px;overflow:auto;padding:7px;border-radius:8px;background:#050708;color:#ffffff70;font:9px/1.4 ui-monospace,monospace}' +
-    '#' + APP_ID + ' #fcp-log div{padding:2px 0;border-bottom:1px solid #ffffff08}'
+    '#' + APP_ID + ' #fcp-log{margin-top:9px;max-height:112px;overflow:auto;padding:8px;border-radius:8px;background:#0d1720;color:#ffffff70;font:9px/1.45 ui-monospace,monospace}' +
+    '#' + APP_ID + ' #fcp-log div{padding:2px 0;border-bottom:1px solid #ffffff08}' +
+
+    '#fcp-native-nav{appearance:none;-webkit-appearance:none;flex:1 1 0;min-width:52px;height:64px;border:0;background:transparent;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-family:system-ui,-apple-system,Segoe UI,sans-serif;padding:0;margin:0}' +
+    '#fcp-native-nav .fcp-nav-icon{width:29px;height:29px;border-radius:8px;display:flex;align-items:center;justify-content:center;background:#00d978;color:#07150e;font-weight:950;font-size:13px}' +
+    '#fcp-native-nav .fcp-nav-label{font-size:10px;color:#fff}' +
+
+    '.fcp-native-action{position:relative;width:100%;min-height:62px;padding:10px 42px 10px 18px;border:0;border-top:1px solid #ffffff16;border-bottom:1px solid #ffffff16;background:transparent;color:#fff;text-align:left;font-family:system-ui,-apple-system,Segoe UI,sans-serif}' +
+    '.fcp-native-action span{display:block;font-size:18px}' +
+    '.fcp-native-action small{display:block;margin-top:3px;font-size:11px;color:#ffffff70}' +
+    '.fcp-native-action b{position:absolute;right:18px;top:50%;transform:translateY(-50%);font-size:30px;font-weight:300}'
   );
 
   function boot() {
