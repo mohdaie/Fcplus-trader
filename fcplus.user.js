@@ -2215,12 +2215,31 @@
         var minBin = bins[0] || 0;
         var minBid = rows.map(function (x) { return x.currentBid || x.startPrice; }).filter(Boolean)
           .sort(function (a, b) { return a - b; })[0] || 0;
-        var netSale = Math.floor(stable * 0.95);
-        var maxBid = quickFlipEntryFor(stable, state.quickFlipPreferredProfit);
+        var targetInfo = bestQuickFlipTarget(stable, rows);
+        var netSale = targetInfo.netSale;
+
+        if (!targetInfo.floorPossible) {
+          log(
+            'SKIP · ' + seed.name +
+            ' · EA min ' + (targetInfo.priceFloor ? targetInfo.priceFloor.toLocaleString() : 'unknown') +
+            ' · max possible profit ' + (targetInfo.maxPossibleProfit >= 0 ? '+' : '') + targetInfo.maxPossibleProfit.toLocaleString() +
+            ' < floor +' + state.minProfit.toLocaleString()
+          );
+          await sleep(250);
+          continue;
+        }
+
+        var activeTarget = targetInfo.preferredPossible
+          ? targetInfo.preferredTarget
+          : state.minProfit;
+        var maxBid = targetInfo.preferredPossible
+          ? targetInfo.preferredEntry
+          : targetInfo.floorEntry;
+
         var immediate = rows.filter(function (x) {
           var entry = x.currentBid || x.startPrice;
-          return (x.buyNow > 0 && x.buyNow <= maxBid) ||
-            (entry > 0 && entry <= maxBid && x.timeSeconds <= 120);
+          return (x.buyNow > 0 && x.buyNow >= targetInfo.priceFloor && x.buyNow <= maxBid) ||
+            (entry > 0 && entry >= targetInfo.priceFloor && entry <= maxBid && x.timeSeconds <= 120);
         }).sort(function (a, b) {
           var ae = Math.min(a.buyNow || Infinity, a.currentBid || a.startPrice || Infinity);
           var be = Math.min(b.buyNow || Infinity, b.currentBid || b.startPrice || Infinity);
@@ -2252,6 +2271,9 @@
           stableBIN: stable,
           minBid: minBid,
           maxBid: maxBid,
+          priceFloor: targetInfo.priceFloor,
+          priceCeiling: targetInfo.priceCeiling,
+          activeTargetProfit: activeTarget,
           netSale: netSale,
           expectedProfit: expectedProfit,
           currentEntryProfit: currentEntryProfit,
@@ -2299,7 +2321,8 @@
       log(
         'FOUND · ' + qualityLabel + ' · ' + best.name + ' ' + best.rating +
         ' · market ' + best.stableBIN.toLocaleString() +
-        ' · max bid ' + best.maxBid.toLocaleString() +
+        ' · EA min ' + (best.priceFloor ? best.priceFloor.toLocaleString() : '—') +
+        ' · max entry ' + best.maxBid.toLocaleString() +
         ' · target profit ' + (best.expectedProfit >= 0 ? '+' : '') + best.expectedProfit.toLocaleString()
       );
     } catch (e) {
