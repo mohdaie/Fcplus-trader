@@ -3772,6 +3772,7 @@
       if (computed.position === 'static') host.style.position = 'relative';
       host.style.overflow = 'visible';
       host.style.zIndex = host.style.zIndex || '1';
+      if (host.parentElement) host.parentElement.style.overflow = 'visible';
     } catch (e) {}
 
     if (state.showAltPositions) {
