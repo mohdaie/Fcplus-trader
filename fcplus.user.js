@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC+ Auto Trader Mobile
 // @namespace    https://fcplus.local/
-// @version      0.8.8
+// @version      0.8.9
 // @description  FC+ Quick Flip market scanner, SBC candidate bridge, auto trader, card pricing and diagnostics for the EA FC Web App.
 // @homepageURL  https://github.com/mohdaie/Fcplus-trader
 // @updateURL    https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var APP_ID = 'fcplus-auto-v088';
+  var APP_ID = 'fcplus-auto-v089';
   if (document.getElementById(APP_ID)) return;
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -271,6 +271,53 @@
     return Math.max(0, maxBid);
   }
 
+  function isSpecialMarketRow(row) {
+    var item = row && row.rawItem;
+    try {
+      if (item && typeof item.isSpecial === 'function') return !!item.isSpecial();
+    } catch (e) {}
+    return lower(row && row.level).indexOf('special') >= 0;
+  }
+
+  function fallbackBaseCardFloor(row) {
+    if (!row || isSpecialMarketRow(row)) return 0;
+
+    var rating = Number(row.rating) || 0;
+    var rare = !!row.rare;
+    var quality = lower(playerQuality(row));
+
+    if (quality === 'bronze') return 150;
+
+    if (quality === 'silver') {
+      if (!rare) return 150;
+      return rating >= 72 ? 300 : 250;
+    }
+
+    if (quality === 'gold') {
+      if (!rare) return rating <= 75 ? 300 : 350;
+      if (rating <= 75) return 600;
+      if (rating <= 81) return 650;
+      if (rating <= 84) return 700;
+      return 800;
+    }
+
+    return 0;
+  }
+
+  function effectiveEaPriceFloor(rows) {
+    var exact = eaPriceFloor(rows);
+    if (exact > 0) return { value: exact, source: 'EA exact' };
+
+    var samples = rows || [];
+    var fallbackFloors = samples.map(fallbackBaseCardFloor).filter(function (v) { return v > 0; });
+    if (!fallbackFloors.length) return { value: 0, source: 'unavailable' };
+
+    return {
+      value: Math.max.apply(Math, fallbackFloors),
+      source: 'base-card fallback'
+    };
+  }
+
   function eaPriceFloor(rows) {
     var floors = (rows || []).map(function (row) {
       return Number(row && row.priceMin) || 0;
@@ -303,25 +350,29 @@
 
   function bestQuickFlipTarget(bin, rows) {
     var net = Math.floor(Number(bin || 0) * 0.95);
-    var floor = eaPriceFloor(rows);
+    var floorInfo = effectiveEaPriceFloor(rows);
+    var floor = floorInfo.value;
     var ceiling = eaPriceCeiling(rows);
-    var rangeKnown = floor > 0 && ceiling > 0 && ceiling >= floor;
+    var special = (rows || []).some(isSpecialMarketRow);
+    var floorKnown = floor > 0;
     var preferred = Math.max(state.minProfit, state.quickFlipPreferredProfit);
-    var maxPossibleProfit = rangeKnown ? net - floor : 0;
-    var preferredEntry = rangeKnown ? quickFlipEntryFor(bin, preferred, floor) : 0;
-    var floorEntry = rangeKnown ? quickFlipEntryFor(bin, state.minProfit, floor) : 0;
+    var maxPossibleProfit = floorKnown ? net - floor : 0;
+    var preferredEntry = floorKnown ? quickFlipEntryFor(bin, preferred, floor) : 0;
+    var floorEntry = floorKnown ? quickFlipEntryFor(bin, state.minProfit, floor) : 0;
 
     return {
       priceFloor: floor,
       priceCeiling: ceiling,
-      rangeKnown: rangeKnown,
+      priceFloorSource: floorInfo.source,
+      special: special,
+      floorKnown: floorKnown,
       netSale: net,
       maxPossibleProfit: maxPossibleProfit,
       preferredTarget: preferred,
       preferredEntry: preferredEntry,
       floorEntry: floorEntry,
-      preferredPossible: rangeKnown && preferredEntry > 0,
-      floorPossible: rangeKnown && floorEntry > 0
+      preferredPossible: floorKnown && preferredEntry > 0,
+      floorPossible: floorKnown && floorEntry > 0
     };
   }
 
@@ -952,7 +1003,7 @@
     var floor = Math.max(0, Number(limits.minimum) || 0);
     var ceiling = Math.max(0, Number(limits.maximum) || 0);
     if (!floor || !ceiling || ceiling < floor) {
-      throw new Error('EA price range unavailable for owned card');
+      throw new Error('EA price floor unavailable for owned card');
     }
 
     var requestedBIN = legalDown(sellBIN);
@@ -1168,7 +1219,7 @@
     var legalFloor = Number(candidate.priceFloor) || Number(decision.row.priceMin) || 0;
     var legalCeiling = Number(candidate.priceCeiling) || Number(decision.row.priceMax) || 0;
     if (!legalFloor || !legalCeiling) {
-      log('LIVE BLOCKED · EA price range unavailable for exact card');
+      log('LIVE BLOCKED · EA price floor unavailable for exact card');
       return;
     }
     if (!price || price > maxEntry || price < legalFloor || price > legalCeiling) {
@@ -2017,8 +2068,8 @@
       var targetInfo = bestQuickFlipTarget(stable, rows);
       var netSale = targetInfo.netSale;
 
-      if (!targetInfo.rangeKnown) {
-        throw new Error('EA price range unavailable for this card');
+      if (!targetInfo.floorKnown) {
+        throw new Error('EA price floor unavailable for this card');
       }
 
       if (!targetInfo.floorPossible) {
@@ -2069,6 +2120,7 @@
         maxBid: maxBid,
         priceFloor: targetInfo.priceFloor,
         priceCeiling: targetInfo.priceCeiling,
+        priceFloorSource: targetInfo.priceFloorSource,
         activeTargetProfit: activeTarget,
         netSale: netSale,
         expectedProfit: maxBid ? netSale - maxBid : 0,
@@ -2277,8 +2329,8 @@
         var targetInfo = bestQuickFlipTarget(stable, rows);
         var netSale = targetInfo.netSale;
 
-        if (!targetInfo.rangeKnown) {
-          log('SKIP · ' + seed.name + ' · EA PRICE RANGE unavailable');
+        if (!targetInfo.floorKnown) {
+          log('SKIP · ' + seed.name + ' · EA PRICE FLOOR unavailable');
           await sleep(250);
           continue;
         }
@@ -2286,7 +2338,7 @@
         if (!targetInfo.floorPossible) {
           log(
             'SKIP · ' + seed.name +
-            ' · price range ' + targetInfo.priceFloor.toLocaleString() + '–' + targetInfo.priceCeiling.toLocaleString() +
+            ' · floor ' + targetInfo.priceFloor.toLocaleString() + ' (' + targetInfo.priceFloorSource + ')' +
             ' · max possible profit ' + (targetInfo.maxPossibleProfit >= 0 ? '+' : '') + targetInfo.maxPossibleProfit.toLocaleString() +
             ' < floor +' + state.minProfit.toLocaleString()
           );
@@ -2338,6 +2390,7 @@
           maxBid: maxBid,
           priceFloor: targetInfo.priceFloor,
           priceCeiling: targetInfo.priceCeiling,
+          priceFloorSource: targetInfo.priceFloorSource,
           activeTargetProfit: activeTarget,
           netSale: netSale,
           expectedProfit: expectedProfit,
@@ -3151,9 +3204,15 @@
     if (player) player.textContent = candidate ? (candidate.name + ' · ' + candidate.rating) : '—';
     if (market) market.textContent = candidate && candidate.stableBIN ? candidate.stableBIN.toLocaleString() : '—';
     if (priceRange) {
-      priceRange.textContent = candidate && candidate.priceFloor && candidate.priceCeiling
-        ? candidate.priceFloor.toLocaleString() + '–' + candidate.priceCeiling.toLocaleString()
-        : '—';
+      if (candidate && candidate.priceFloor) {
+        priceRange.textContent = candidate.priceCeiling
+          ? candidate.priceFloor.toLocaleString() + '–' + candidate.priceCeiling.toLocaleString()
+          : candidate.priceFloor.toLocaleString() + '+';
+        priceRange.title = candidate.priceFloorSource || '';
+      } else {
+        priceRange.textContent = '—';
+        priceRange.title = '';
+      }
     }
     if (maxBid) maxBid.textContent = candidate && candidate.maxBid ? candidate.maxBid.toLocaleString() : '—';
     if (profit) {
@@ -3309,12 +3368,12 @@
     candidate.priceFloor = targetInfo.priceFloor;
     candidate.priceCeiling = targetInfo.priceCeiling;
 
-    if (!targetInfo.rangeKnown) {
+    if (!targetInfo.floorKnown) {
       candidate.maxBid = 0;
       candidate.expectedProfit = 0;
-      state.quickFlip.status = 'Skip ' + candidate.name + ' · EA price range unavailable';
+      state.quickFlip.status = 'Skip ' + candidate.name + ' · EA price floor unavailable';
       renderQuickFlip();
-      log('ROTATE · ' + candidate.name + ' · EA PRICE RANGE unavailable');
+      log('ROTATE · ' + candidate.name + ' · EA PRICE FLOOR unavailable');
       await scanQuickFlipPlayers({ rotate: true });
       return;
     }
@@ -3325,7 +3384,7 @@
       candidate.currentEntryProfit = minBin ? targetInfo.netSale - minBin : 0;
       state.quickFlip.status =
         'Skip ' + candidate.name +
-        ' · price range ' + targetInfo.priceFloor.toLocaleString() + '–' + targetInfo.priceCeiling.toLocaleString() +
+        ' · floor ' + targetInfo.priceFloor.toLocaleString() + ' (' + targetInfo.priceFloorSource + ')' +
         ' only allows ' + (targetInfo.maxPossibleProfit >= 0 ? '+' : '') + targetInfo.maxPossibleProfit.toLocaleString();
 
       renderQuickFlip();
@@ -3428,7 +3487,7 @@
         log(
           'MONITOR · ' + candidate.name +
           ' · market ' + stable.toLocaleString() +
-          ' · price range ' + targetInfo.priceFloor.toLocaleString() + '–' + targetInfo.priceCeiling.toLocaleString() +
+          ' · floor ' + targetInfo.priceFloor.toLocaleString() + ' (' + targetInfo.priceFloorSource + ')' +
           ' · target +' + activeProfitTarget.toLocaleString() +
           ' · max entry ' + maxEntry.toLocaleString() +
           ' · cheapest BIN ' + (minBin ? minBin.toLocaleString() : '—')
@@ -4423,7 +4482,7 @@
     root.innerHTML =
       '<div class="fcp-native-head">' +
         '<button id="fcp-close" type="button">‹</button>' +
-        '<div><b>FC+ Trader</b><small>v0.8.8 · FC+ Quick Flip</small></div>' +
+        '<div><b>FC+ Trader</b><small>v0.8.9 · FC+ Quick Flip</small></div>' +
         '<span id="fcp-headstate">DRY</span>' +
       '</div>' +
       '<div id="fcp-body" class="fcp-native-body">' +
