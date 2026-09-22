@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         FC+ Auto Trader Mobile
 // @namespace    https://fcplus.local/
-// @version      0.8.10
-// @description  FC+ Quick Flip market scanner, SBC candidate bridge, auto trader, card pricing and diagnostics for the EA FC Web App.
+// @version      0.9.0
+// @description  FC+ market scout, SBC candidate bridge, card pricing and diagnostics for manual EA FC sniping.
 // @homepageURL  https://github.com/mohdaie/Fcplus-trader
 // @updateURL    https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
 // @downloadURL  https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var APP_ID = 'fcplus-auto-v0810';
+  var APP_ID = 'fcplus-scout-v090';
   if (document.getElementById(APP_ID)) return;
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -70,6 +70,7 @@
     quickFlipRotateMs: 75000,
     quickFlip: {
       candidate: null,
+      scoutResults: [],
       scannedAt: 0,
       scannedListings: 0,
       uniquePlayers: 0,
@@ -4485,33 +4486,41 @@
   }
 
   function createUI() {
+    state.running = false;
+    state.busy = false;
+    state.liveTrade = null;
+    state.dryRun = true;
+    state.autoBid = false;
+    state.autoBuyNow = false;
+    state.autoSell = false;
+
     var root = document.createElement('section');
     root.id = APP_ID;
     root.innerHTML =
       '<div class="fcp-native-head">' +
         '<button id="fcp-close" type="button">‹</button>' +
-        '<div><b>FC+ Trader</b><small>v0.8.10 · FC+ Quick Flip</small></div>' +
-        '<span id="fcp-headstate">DRY</span>' +
+        '<div><b>FC+ Scout</b><small>v0.9.0 · Market Scout</small></div>' +
+        '<span id="fcp-headstate">SCOUT</span>' +
       '</div>' +
       '<div id="fcp-body" class="fcp-native-body">' +
 
         '<section class="fcp-section fcp-method-card">' +
-          '<div class="fcp-eyebrow">TRADING METHOD</div>' +
+          '<div class="fcp-eyebrow">MARKET SCOUT</div>' +
           '<div class="fcp-method-title-row">' +
-            '<div><h2>FC+ Quick Flip</h2><p>Choose a card quality, or send a player here directly from SBC Scanner.</p></div>' +
-            '<span id="fcp-state" data-on="0">STOPPED</span>' +
+            '<div><h2>FC+ Scout</h2><p>FC+ finds opportunities. You decide when to search and snipe manually.</p></div>' +
+            '<span id="fcp-state" data-on="0">MANUAL</span>' +
           '</div>' +
-          '<div class="fcp-quality-picker" role="radiogroup" aria-label="Quick Flip card quality">' +
+          '<div class="fcp-quality-picker" role="radiogroup" aria-label="Scout card quality">' +
             '<label><input type="radio" name="fcp-quality" value="bronze"' + (state.quickFlipQuality === 'bronze' ? ' checked' : '') + '><span>Bronze</span></label>' +
             '<label><input type="radio" name="fcp-quality" value="silver"' + (state.quickFlipQuality === 'silver' ? ' checked' : '') + '><span>Silver</span></label>' +
             '<label><input type="radio" name="fcp-quality" value="gold"' + (state.quickFlipQuality === 'gold' ? ' checked' : '') + '><span>Gold</span></label>' +
             '<label><input type="radio" name="fcp-quality" value="special"' + (state.quickFlipQuality === 'special' ? ' checked' : '') + '><span>Special</span></label>' +
           '</div>' +
-          '<button id="fcp-scanplayer" class="fcp-primary" type="button">SCAN PLAYER</button>' +
+          '<button id="fcp-scanplayer" class="fcp-primary" type="button" >SCAN MARKET</button>' +
         '</section>' +
 
         '<section class="fcp-section">' +
-          '<div class="fcp-section-title"><h3>Result</h3><span>Trades <b id="fcp-trades">0/' + state.maxTrades + '</b></span></div>' +
+          '<div class="fcp-section-title"><h3>Best Opportunity</h3><span id="fcp-scout-count">0 candidates</span></div>' +
           '<div id="fcp-result-status" class="fcp-result-status">Ready to scan ' + quickFlipQualityLabel() + ' players</div>' +
           '<div class="fcp-result-grid">' +
             '<div class="fcp-result-player"><small>PLAYER</small><b id="fcp-result-player">—</b></div>' +
@@ -4521,30 +4530,18 @@
             '<div><small>TARGET PROFIT</small><b id="fcp-result-profit">—</b></div>' +
           '</div>' +
           '<div id="fcp-result-meta" class="fcp-result-meta">No scan yet</div>' +
+          '<div class="fcp-scout-list-title">SCOUTING RESULTS</div>' +
+          '<div id="fcp-scout-results" class="fcp-scout-results"></div>' +
         '</section>' +
 
         '<section class="fcp-section">' +
-          '<div class="fcp-section-title"><h3>Condition</h3><button id="fcp-edit-conditions" class="fcp-link-btn" type="button">EDIT</button></div>' +
-          '<div class="fcp-mode-row">' +
-            '<span><b>Trade mode</b><small>Dry Run only simulates. Live can spend EA coins.</small></span>' +
-            '<button id="fcp-mode-toggle" class="fcp-mode-toggle" data-live="' + (state.dryRun ? '0' : '1') + '" type="button">' + (state.dryRun ? 'DRY RUN' : 'LIVE') + '</button>' +
-          '</div>' +
+          '<div class="fcp-section-title"><h3>Scout Rules</h3><button id="fcp-edit-conditions" class="fcp-link-btn" type="button">EDIT</button></div>' +
           '<div class="fcp-condition-chips">' +
             '<span id="fcp-cond-quality">' + quickFlipQualityLabel() + ' only</span>' +
             '<span id="fcp-cond-profit">Target +' + state.quickFlipPreferredProfit + ' · floor +' + state.minProfit + '</span>' +
-            '<span id="fcp-cond-bid">' + (state.autoBid ? 'Auto bid / rebid' : 'Bid off') + '</span>' +
-            '<span id="fcp-cond-buy">' + (state.autoBuyNow ? 'Auto Buy Now' : 'Buy Now off') + '</span>' +
-            '<span id="fcp-cond-relist">' + (state.autoSell ? 'Auto relist' : 'Relist off') + '</span>' +
-            '<span id="fcp-cond-mode">' + (state.dryRun ? 'Dry run' : 'Live') + '</span>' +
-            '<span>List 1 hour</span>' +
-            '<span id="fcp-cond-trades">Max ' + state.maxTrades + ' trades</span>' +
+            '<span>Manual snipe</span>' +
+            '<span>No automatic buying</span>' +
           '</div>' +
-        '</section>' +
-
-        '<section class="fcp-section fcp-auto-card">' +
-          '<div class="fcp-profit"><span>Realized profit today</span><b><span id="fcp-profit">' + state.daily.realizedProfit.toLocaleString() + '</span> coins</b></div>' +
-          '<div id="fcp-action">Ready · scan a player first</div>' +
-          '<button id="fcp-start" class="fcp-start" data-on="0" type="button">AUTO TRADE</button>' +
         '</section>' +
 
         '<details class="fcp-fold">' +
@@ -4593,18 +4590,10 @@
           '<summary><span>Settings</span><b>›</b></summary>' +
           '<div class="fcp-fold-body">' +
             '<div class="fcp-settings-block">' +
-              '<h3>Trading</h3>' +
+              '<h3>Scout</h3>' +
               '<div class="fcp-grid three">' +
                 '<label>TARGET PROFIT<input id="fcp-targetprofit" type="number" inputmode="numeric" value="' + state.quickFlipPreferredProfit + '"></label>' +
                 '<label>MIN PROFIT<input id="fcp-minprofit" type="number" inputmode="numeric" value="' + state.minProfit + '"></label>' +
-                '<label>MAX BID CAP<input id="fcp-bidcap" type="number" inputmode="numeric" value="' + (state.maxBidCap || '') + '" placeholder="Auto"></label>' +
-                '<label>MAX BIN BUY<input id="fcp-maxbin" type="number" inputmode="numeric" value="' + (state.maxBinBuy || '') + '" placeholder="Off"></label>' +
-              '</div>' +
-              '<div class="fcp-switches">' +
-                '<label><span>Auto bid / rebid</span><input id="fcp-autobid" type="checkbox"' + (state.autoBid ? ' checked' : '') + '></label>' +
-                '<label><span>Auto Buy Now</span><input id="fcp-autobin" type="checkbox"' + (state.autoBuyNow ? ' checked' : '') + '></label>' +
-                '<label><span>Auto relist</span><input id="fcp-autosell" type="checkbox"' + (state.autoSell ? ' checked' : '') + '></label>' +
-                '<label><span>Dry run</span><input id="fcp-dry" type="checkbox"' + (state.dryRun ? ' checked' : '') + '></label>' +
               '</div>' +
             '</div>' +
 
@@ -4617,12 +4606,8 @@
             '</div>' +
 
             '<div class="fcp-settings-block">' +
-              '<h3>Limits</h3>' +
+              '<h3>Scan</h3>' +
               '<div class="fcp-grid">' +
-                '<label>SESSION MIN<input id="fcp-session" type="number" inputmode="numeric" value="' + state.sessionMinutes + '"></label>' +
-                '<label>MAX TRADES<input id="fcp-maxtrades" type="number" inputmode="numeric" value="' + state.maxTrades + '"></label>' +
-                '<label>DELAY SEC<input id="fcp-delay" type="number" inputmode="decimal" step="0.5" value="' + (state.pollMs / 1000) + '"></label>' +
-                '<label>DAILY TARGET<input id="fcp-dailytarget" type="number" inputmode="numeric" value="' + state.dailyTarget + '"></label>' +
                 '<label>FULL SCAN PAGE CAP<input id="fcp-maxscanpages" type="number" inputmode="numeric" min="1" max="100" value="' + state.maxScanPages + '"></label>' +
               '</div>' +
             '</div>' +
