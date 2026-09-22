@@ -2796,7 +2796,7 @@
     var profit = document.querySelector('#fcp-result-profit');
     var scanMeta = document.querySelector('#fcp-result-meta');
 
-    if (status) status.textContent = q.status || 'Ready to scan silver players';
+    if (status) status.textContent = q.status || ('Ready to scan ' + quickFlipQualityLabel() + ' players');
     if (player) player.textContent = candidate ? (candidate.name + ' · ' + candidate.rating) : '—';
     if (market) market.textContent = candidate && candidate.stableBIN ? candidate.stableBIN.toLocaleString() : '—';
     if (maxBid) maxBid.textContent = candidate && candidate.maxBid ? candidate.maxBid.toLocaleString() : '—';
@@ -2813,18 +2813,24 @@
         : 'No scan yet';
     }
 
+    var cQuality = document.querySelector('#fcp-cond-quality');
     var cMin = document.querySelector('#fcp-cond-profit');
     var cBid = document.querySelector('#fcp-cond-bid');
     var cBuy = document.querySelector('#fcp-cond-buy');
     var cRelist = document.querySelector('#fcp-cond-relist');
     var cMode = document.querySelector('#fcp-cond-mode');
     var cTrades = document.querySelector('#fcp-cond-trades');
+    if (cQuality) cQuality.textContent = quickFlipQualityLabel() + ' only';
     if (cMin) cMin.textContent = 'Target +' + state.quickFlipPreferredProfit.toLocaleString() + ' · floor +' + state.minProfit.toLocaleString();
     if (cBid) cBid.textContent = state.autoBid ? 'Auto bid / rebid' : 'Bid off';
     if (cBuy) cBuy.textContent = state.autoBuyNow ? 'Auto Buy Now' : 'Buy Now off';
     if (cRelist) cRelist.textContent = state.autoSell ? 'Auto relist' : 'Relist off';
     if (cMode) cMode.textContent = state.dryRun ? 'Dry run' : 'Live';
     if (cTrades) cTrades.textContent = 'Max ' + state.maxTrades + ' trades';
+
+    Array.from(document.querySelectorAll('input[name="fcp-quality"]')).forEach(function (radio) {
+      radio.checked = lower(radio.value) === lower(state.quickFlipQuality || 'silver');
+    });
   }
 
 
@@ -2863,6 +2869,8 @@
     state.autoSell = checked('#fcp-autosell');
     state.showAltPositions = checked('#fcp-altpositions');
     state.showCardPrices = checked('#fcp-cardprices');
+    var qualityRadio = document.querySelector('input[name="fcp-quality"]:checked');
+    if (qualityRadio) state.quickFlipQuality = lower(qualityRadio.value || 'silver');
     state.minProfit = Math.max(0, val('#fcp-minprofit'));
     state.maxBidCap = Math.max(0, val('#fcp-bidcap'));
     state.maxBinBuy = Math.max(0, val('#fcp-maxbin'));
@@ -2907,7 +2915,7 @@
   async function monitorQuickFlipCandidate() {
     var candidate = state.quickFlip && state.quickFlip.candidate;
     if (!candidate || !candidate.definitionId) {
-      log('AUTO · no Silver Quickflip candidate selected');
+      log('AUTO · no FC+ Quick Flip candidate selected');
       return;
     }
 
@@ -3032,7 +3040,7 @@
     }
 
     state.currentTarget = {
-      strategy: 'silver_quick_flip',
+      strategy: 'fcplus_quick_flip',
       definitionId: candidate.definitionId,
       name: candidate.name,
       rating: candidate.rating,
