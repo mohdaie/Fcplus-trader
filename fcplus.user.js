@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC+ Auto Trader Mobile
 // @namespace    https://fcplus.local/
-// @version      0.8.0
+// @version      0.8.1
 // @description  FC+ Quick Flip market scanner, SBC candidate bridge, auto trader, card pricing and diagnostics for the EA FC Web App.
 // @homepageURL  https://github.com/mohdaie/Fcplus-trader
 // @updateURL    https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
@@ -20,7 +20,7 @@
 (function () {
   'use strict';
 
-  var APP_ID = 'fcplus-auto-v080';
+  var APP_ID = 'fcplus-auto-v081';
   if (document.getElementById(APP_ID)) return;
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -46,7 +46,8 @@
     scanPageDelayMs: 1200,
     showAltPositions: true,
     showCardPrices: true,
-    quickFlipQuality: 'silver'
+    quickFlipQuality: 'silver',
+    quickFlipPreferredProfit: 500
   };
 
   var stored = GM_getValue('fcplus_settings_v031', {}) || {};
@@ -64,7 +65,7 @@
     fastScanning: false,
     smartScanning: false,
     silverScanning: false,
-    quickFlipPreferredProfit: 500,
+    quickFlipPreferredProfit: Number(stored.quickFlipPreferredProfit) || 500,
     quickFlipPreferredMs: 45000,
     quickFlipRotateMs: 75000,
     quickFlip: {
@@ -147,7 +148,8 @@
       scanPageDelayMs: state.scanPageDelayMs,
       showAltPositions: state.showAltPositions,
       showCardPrices: state.showCardPrices,
-      quickFlipQuality: state.quickFlipQuality
+      quickFlipQuality: state.quickFlipQuality,
+      quickFlipPreferredProfit: state.quickFlipPreferredProfit
     });
   }
 
@@ -2972,6 +2974,7 @@
     var cBuy = document.querySelector('#fcp-cond-buy');
     var cRelist = document.querySelector('#fcp-cond-relist');
     var cMode = document.querySelector('#fcp-cond-mode');
+    var modeButton = document.querySelector('#fcp-mode-toggle');
     var cTrades = document.querySelector('#fcp-cond-trades');
     if (cQuality) cQuality.textContent = quickFlipQualityLabel() + ' only';
     if (cMin) cMin.textContent = 'Target +' + state.quickFlipPreferredProfit.toLocaleString() + ' · floor +' + state.minProfit.toLocaleString();
@@ -2979,6 +2982,11 @@
     if (cBuy) cBuy.textContent = state.autoBuyNow ? 'Auto Buy Now' : 'Buy Now off';
     if (cRelist) cRelist.textContent = state.autoSell ? 'Auto relist' : 'Relist off';
     if (cMode) cMode.textContent = state.dryRun ? 'Dry run' : 'Live';
+    if (modeButton) {
+      modeButton.textContent = state.dryRun ? 'DRY RUN' : 'LIVE';
+      modeButton.dataset.live = state.dryRun ? '0' : '1';
+      modeButton.disabled = !!state.running;
+    }
     if (cTrades) cTrades.textContent = 'Max ' + state.maxTrades + ' trades';
 
     Array.from(document.querySelectorAll('input[name="fcp-quality"]')).forEach(function (radio) {
@@ -3024,6 +3032,7 @@
     state.showCardPrices = checked('#fcp-cardprices');
     var qualityRadio = document.querySelector('input[name="fcp-quality"]:checked');
     if (qualityRadio) state.quickFlipQuality = lower(qualityRadio.value || 'silver');
+    state.quickFlipPreferredProfit = Math.max(0, val('#fcp-targetprofit') || 500);
     state.minProfit = Math.max(0, val('#fcp-minprofit'));
     state.maxBidCap = Math.max(0, val('#fcp-bidcap'));
     state.maxBinBuy = Math.max(0, val('#fcp-maxbin'));
@@ -3954,7 +3963,7 @@
     root.innerHTML =
       '<div class="fcp-native-head">' +
         '<button id="fcp-close" type="button">‹</button>' +
-        '<div><b>FC+ Trader</b><small>v0.8.0 · FC+ Quick Flip</small></div>' +
+        '<div><b>FC+ Trader</b><small>v0.8.1 · FC+ Quick Flip</small></div>' +
         '<span id="fcp-headstate">DRY</span>' +
       '</div>' +
       '<div id="fcp-body" class="fcp-native-body">' +
@@ -3987,7 +3996,11 @@
         '</section>' +
 
         '<section class="fcp-section">' +
-          '<h3>Condition</h3>' +
+          '<div class="fcp-section-title"><h3>Condition</h3><button id="fcp-edit-conditions" class="fcp-link-btn" type="button">EDIT</button></div>' +
+          '<div class="fcp-mode-row">' +
+            '<span><b>Trade mode</b><small>Dry Run only simulates. Live can spend EA coins.</small></span>' +
+            '<button id="fcp-mode-toggle" class="fcp-mode-toggle" data-live="' + (state.dryRun ? '0' : '1') + '" type="button">' + (state.dryRun ? 'DRY RUN' : 'LIVE') + '</button>' +
+          '</div>' +
           '<div class="fcp-condition-chips">' +
             '<span id="fcp-cond-quality">' + quickFlipQualityLabel() + ' only</span>' +
             '<span id="fcp-cond-profit">Target +' + state.quickFlipPreferredProfit + ' · floor +' + state.minProfit + '</span>' +
@@ -4048,12 +4061,13 @@
           '</div>' +
         '</details>' +
 
-        '<details class="fcp-fold">' +
+        '<details id="fcp-settings-fold" class="fcp-fold">' +
           '<summary><span>Settings</span><b>›</b></summary>' +
           '<div class="fcp-fold-body">' +
             '<div class="fcp-settings-block">' +
               '<h3>Trading</h3>' +
               '<div class="fcp-grid three">' +
+                '<label>TARGET PROFIT<input id="fcp-targetprofit" type="number" inputmode="numeric" value="' + state.quickFlipPreferredProfit + '"></label>' +
                 '<label>MIN PROFIT<input id="fcp-minprofit" type="number" inputmode="numeric" value="' + state.minProfit + '"></label>' +
                 '<label>MAX BID CAP<input id="fcp-bidcap" type="number" inputmode="numeric" value="' + (state.maxBidCap || '') + '" placeholder="Auto"></label>' +
                 '<label>MAX BIN BUY<input id="fcp-maxbin" type="number" inputmode="numeric" value="' + (state.maxBinBuy || '') + '" placeholder="Off"></label>' +
@@ -4111,6 +4125,26 @@
         }
         start();
       }
+    });
+
+    root.querySelector('#fcp-mode-toggle').addEventListener('click', function () {
+      if (state.running) {
+        log('Stop Auto Trade before changing Dry/Live mode');
+        return;
+      }
+      var dry = root.querySelector('#fcp-dry');
+      if (dry) dry.checked = !dry.checked;
+      readUI();
+      log('TRADE MODE · ' + (state.dryRun ? 'Dry Run' : 'LIVE'));
+    });
+
+    root.querySelector('#fcp-edit-conditions').addEventListener('click', function () {
+      var fold = root.querySelector('#fcp-settings-fold');
+      if (!fold) return;
+      fold.open = true;
+      setTimeout(function () {
+        try { fold.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (e) { fold.scrollIntoView(); }
+      }, 40);
     });
 
     root.querySelector('#fcp-sbc-scan').addEventListener('click', function () {
@@ -4272,6 +4306,14 @@
     '#' + APP_ID + ' .fcp-result-player{grid-column:1/-1}' +
     '#' + APP_ID + ' .fcp-result-player b{font-size:17px}' +
     '#' + APP_ID + ' .fcp-result-meta{margin-top:8px;color:#ffffff62;font-size:9px}' +
+    '#' + APP_ID + ' .fcp-link-btn{border:0;background:transparent;color:#75d8ff;font-size:9px;font-weight:900}' +
+    '#' + APP_ID + ' .fcp-mode-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:11px;padding:10px;border-radius:11px;background:#172431}' +
+    '#' + APP_ID + ' .fcp-mode-row>span{min-width:0}' +
+    '#' + APP_ID + ' .fcp-mode-row b{display:block;color:#fff;font-size:11px}' +
+    '#' + APP_ID + ' .fcp-mode-row small{display:block;margin-top:2px;color:#ffffff65;font-size:8px;line-height:1.35}' +
+    '#' + APP_ID + ' .fcp-mode-toggle{min-width:82px;height:34px;border:1px solid #ffffff20;border-radius:9px;background:#293849;color:#fff;font-size:9px;font-weight:950}' +
+    '#' + APP_ID + ' .fcp-mode-toggle[data-live="1"]{border-color:#00d978;background:#123d2c;color:#8fffc5}' +
+    '#' + APP_ID + ' .fcp-mode-toggle:disabled{opacity:.5}' +
     '#' + APP_ID + ' .fcp-condition-chips{display:flex;flex-wrap:wrap;gap:7px}' +
     '#' + APP_ID + ' .fcp-condition-chips span{padding:7px 9px;border-radius:99px;background:#172431;border:1px solid #ffffff12;color:#eaf1f5;font-size:9px}' +
     '#' + APP_ID + ' .fcp-auto-card{background:#223847}' +
