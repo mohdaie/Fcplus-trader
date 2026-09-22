@@ -516,6 +516,8 @@
     return Array.prototype.slice.call(items || []).map(function (item) {
       var auction = item && item._auction;
       return {
+        auctionId: String(auction && auction.tradeId || ''),
+        itemId: String(item && (item.id || item.idStr) || ''),
         definitionId: Number(item && item.definitionId) || 0,
         name: text(item && item._staticData && item._staticData.name),
         rating: Number(item && (item._rating || item.rating)) || 0,
@@ -541,7 +543,9 @@
 
       var source = getActiveSearchCriteria();
       var definitionId = Number(definitionIdOverride) || 0;
-      var criteria = source ? cloneEaCriteria(source, maxBuy) : criteriaForDefinitionId(definitionId, maxBuy);
+      var criteria = definitionId
+        ? criteriaForDefinitionId(definitionId, maxBuy)
+        : (source ? cloneEaCriteria(source, maxBuy) : null);
       if (!criteria) {
         reject(new Error(definitionId ? 'Could not build player market search' : 'Current EA search criteria not found'));
         return;
@@ -605,6 +609,285 @@
       }
     });
   }
+
+
+  function criteriaForSilverQuickFlip() {
+    var w = pageWindow();
+    if (!w.UTSearchCriteriaDTO) return null;
+
+    var criteria = new w.UTSearchCriteriaDTO();
+    try { criteria.count = 20; } catch (e) {}
+    try { criteria.offset = 0; } catch (e) {}
+    try { criteria.type = (w.SearchType && w.SearchType.PLAYER) || 'player'; } catch (e) {}
+    try { criteria.level = 'silver'; } catch (e) {}
+    try { criteria.position = 'any'; } catch (e) {}
+    try { criteria.nation = -1; } catch (e) {}
+    try { criteria.league = -1; } catch (e) {}
+    try { criteria.club = -1; } catch (e) {}
+    try { criteria.playStyle = -1; } catch (e) {}
+    try { criteria.minBid = 0; } catch (e) {}
+    try { criteria.maxBid = 0; } catch (e) {}
+    try { criteria.minBuy = 0; } catch (e) {}
+    try { criteria.maxBuy = 0; } catch (e) {}
+    try { criteria.maskedDefId = 0; } catch (e) {}
+    try { criteria.isExactSearch = false; } catch (e) {}
+    return criteria;
+  }
+
+  function eaSearchWithCriteria(criteria, page) {
+    return new Promise(function (resolve, reject) {
+      var w = pageWindow();
+      var services;
+      try { services = w.services; } catch (e) { services = null; }
+
+      if (!services || !services.Item || typeof services.Item.searchTransferMarket !== 'function') {
+        reject(new Error('EA market service unavailable'));
+        return;
+      }
+      if (!criteria) {
+        reject(new Error('EA search criteria unavailable'));
+        return;
+      }
+
+      try {
+        if (typeof services.Item.clearTransferMarketCache === 'function') {
+          services.Item.clearTransferMarketCache();
+        }
+      } catch (e) {}
+
+      var finished = false;
+      var timer = setTimeout(function () {
+        if (!finished) {
+          finished = true;
+          reject(new Error('EA silver search timed out'));
+        }
+      }, 10000);
+
+      function done(response) {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        try {
+          var data = response && (response.data || response.response);
+          var items = data && (data.items || data.itemData);
+          if (response && response.success === false) {
+            reject(new Error('EA silver search status ' + (response.status || 'failed')));
+            return;
+          }
+          resolve(normalizeEaItems(items || []));
+        } catch (e) {
+          reject(e);
+        }
+      }
+
+      try {
+        var request = services.Item.searchTransferMarket(criteria, Math.max(1, Number(page) || 1));
+        if (request && typeof request.observe === 'function') {
+          var observer = {};
+          request.observe(observer, function (sender, response) {
+            try { if (sender && typeof sender.unobserve === 'function') sender.unobserve(observer); } catch (e) {}
+            done(response);
+          });
+        } else if (request && typeof request.then === 'function') {
+          request.then(done).catch(function (e) {
+            if (!finished) {
+              finished = true;
+              clearTimeout(timer);
+              reject(e);
+            }
+          });
+        } else {
+          clearTimeout(timer);
+          reject(new Error('Unexpected EA silver search response'));
+        }
+      } catch (e) {
+        clearTimeout(timer);
+        reject(e);
+      }
+    });
+  }
+
+  async function scanSilverQuickFlipPlayers() {
+    if (state.silverScanning) return;
+    if (state.running) {
+      log('Stop Auto Trade before scanning a new Silver Quickflip candidate');
+      return;
+    }
+
+    readUI();
+    state.silverScanning = true;
+    state.quickFlip.status = 'Scanning EA silver market…';
+    state.quickFlip.candidate = null;
+    renderQuickFlip();
+    log('SCAN · Silver Quickflip · searching EA silver market');
+
+    var scanButton = document.querySelector('#fcp-scanplayer');
+    if (scanButton) {
+      scanButton.disabled = true;
+      scanButton.textContent = 'SCANNING…';
+    }
+
+    try {
+      var criteria = criteriaForSilverQuickFlip();
+      if (!criteria) throw new Error('EA silver search is not available on this screen yet');
+
+      var broadRows = [];
+      for (var page = 1; page <= 3; page++) {
+        log('SCAN · Silver market page ' + page + '/3');
+        var pageRows = await eaSearchWithCriteria(criteria, page);
+        broadRows = broadRows.concat(pageRows);
+        if (page < 3) await sleep(550);
+      }
+
+      var grouped = {};
+      broadRows.forEach(function (row) {
+        var id = Number(row.definitionId) || 0;
+        if (!id || !row.name || !row.rating) return;
+        if (!grouped[id]) {
+          grouped[id] = {
+            definitionId: id,
+            name: row.name,
+            rating: row.rating,
+            sightings: 0,
+            cheapestSeen: 0
+          };
+        }
+        grouped[id].sightings++;
+        if (row.buyNow > 0 && (!grouped[id].cheapestSeen || row.buyNow < grouped[id].cheapestSeen)) {
+          grouped[id].cheapestSeen = row.buyNow;
+        }
+      });
+
+      var seeds = Object.keys(grouped).map(function (id) { return grouped[id]; })
+        .sort(function (a, b) {
+          return b.sightings - a.sightings || a.cheapestSeen - b.cheapestSeen;
+        })
+        .slice(0, 8);
+
+      state.quickFlip.scannedListings = broadRows.length;
+      state.quickFlip.uniquePlayers = Object.keys(grouped).length;
+      state.quickFlip.checkedPlayers = 0;
+      renderQuickFlip();
+
+      if (!seeds.length) throw new Error('No silver players were returned by EA');
+
+      var evaluated = [];
+      for (var i = 0; i < seeds.length; i++) {
+        var seed = seeds[i];
+        state.quickFlip.status = 'Checking ' + seed.name + ' (' + (i + 1) + '/' + seeds.length + ')';
+        renderQuickFlip();
+        log('CHECK · ' + seed.name + ' ' + seed.rating);
+
+        var rows = await eaDirectSearch(0, seed.definitionId);
+        state.quickFlip.checkedPlayers++;
+        var bins = rows.map(function (x) { return x.buyNow; }).filter(Boolean)
+          .sort(function (a, b) { return a - b; });
+        if (bins.length < 4) {
+          await sleep(350);
+          continue;
+        }
+
+        var stable = stableBIN(bins);
+        var minBin = bins[0] || 0;
+        var minBid = rows.map(function (x) { return x.currentBid || x.startPrice; }).filter(Boolean)
+          .sort(function (a, b) { return a - b; })[0] || 0;
+        var maxBid = maxBidFor(stable);
+        var netSale = Math.floor(stable * 0.95);
+        var immediate = rows.filter(function (x) {
+          var entry = x.currentBid || x.startPrice;
+          return (x.buyNow > 0 && x.buyNow <= maxBid) ||
+            (entry > 0 && entry <= maxBid && x.timeSeconds <= 120);
+        }).sort(function (a, b) {
+          var ae = Math.min(a.buyNow || Infinity, a.currentBid || a.startPrice || Infinity);
+          var be = Math.min(b.buyNow || Infinity, b.currentBid || b.startPrice || Infinity);
+          return ae - be;
+        })[0] || null;
+
+        var entryPrice = immediate
+          ? Math.min(immediate.buyNow || Infinity, immediate.currentBid || immediate.startPrice || Infinity)
+          : Math.min(minBin || Infinity, minBid || Infinity);
+        if (!Number.isFinite(entryPrice)) entryPrice = 0;
+
+        var expectedProfit = entryPrice ? netSale - entryPrice : 0;
+        var spread = stable && minBin ? Math.max(0, stable - minBin) : 0;
+        var score = (immediate ? 100000 : 0) +
+          seed.sightings * 500 +
+          rows.length * 50 +
+          Math.max(0, expectedProfit) * 3 -
+          spread;
+
+        evaluated.push({
+          definitionId: seed.definitionId,
+          name: seed.name,
+          rating: seed.rating,
+          sightings: seed.sightings,
+          sample: rows.length,
+          minBin: minBin,
+          stableBIN: stable,
+          minBid: minBid,
+          maxBid: maxBid,
+          netSale: netSale,
+          expectedProfit: expectedProfit,
+          immediate: !!immediate,
+          score: score
+        });
+
+        await sleep(400);
+      }
+
+      evaluated.sort(function (a, b) {
+        return b.score - a.score || b.expectedProfit - a.expectedProfit;
+      });
+
+      var best = evaluated[0];
+      if (!best) throw new Error('No silver player had enough live listings to price safely');
+
+      state.quickFlip.candidate = best;
+      state.quickFlip.scannedAt = Date.now();
+      state.quickFlip.status = best.immediate
+        ? 'Opportunity found'
+        : 'Best liquid silver found · waiting for cheaper entry';
+
+      state.market = {
+        absMinBIN: best.minBin,
+        stableBIN: best.stableBIN,
+        minBid: best.minBid,
+        listings: best.sample,
+        pages: 1,
+        probes: 0,
+        scannedAt: Date.now(),
+        fullScan: false,
+        fastScan: false,
+        smartScan: false,
+        definitionId: best.definitionId,
+        futggPrice: 0,
+        futggSalesMedian: 0,
+        futggStatus: 'not checked',
+        priceSource: 'EA SILVER SCAN',
+        confidence: best.sample >= 8 ? 'HIGH' : 'MEDIUM'
+      };
+
+      renderMarket();
+      renderQuickFlip();
+      log(
+        'FOUND · ' + best.name + ' ' + best.rating +
+        ' · market ' + best.stableBIN.toLocaleString() +
+        ' · max bid ' + best.maxBid.toLocaleString() +
+        ' · est ' + (best.expectedProfit >= 0 ? '+' : '') + best.expectedProfit.toLocaleString()
+      );
+    } catch (e) {
+      state.quickFlip.status = 'Scan failed · ' + (e && e.message ? e.message : String(e));
+      log(state.quickFlip.status);
+      renderQuickFlip();
+    } finally {
+      state.silverScanning = false;
+      if (scanButton) {
+        scanButton.disabled = false;
+        scanButton.textContent = 'SCAN PLAYER';
+      }
+    }
+  }
+
 
   function gmJsonRequest(method, url, payload) {
     return new Promise(function (resolve, reject) {
