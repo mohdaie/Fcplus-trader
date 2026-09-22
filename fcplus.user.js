@@ -2138,13 +2138,14 @@
       };
 
       state.quickFlip.candidate = candidate;
+      state.quickFlip.scoutResults = [candidate];
       state.quickFlip.scannedAt = Date.now();
       state.quickFlip.scannedListings = rows.length;
       state.quickFlip.uniquePlayers = 1;
       state.quickFlip.checkedPlayers = 1;
       state.quickFlip.status = candidate.immediate
-        ? 'SBC player ready · opportunity found'
-        : 'SBC player ready · monitoring entry ≤ ' + maxBid.toLocaleString();
+        ? 'SBC player opportunity · manual snipe ≤ ' + maxBid.toLocaleString()
+        : 'SBC player scouted · manual snipe ≤ ' + maxBid.toLocaleString();
 
       state.market = {
         absMinBIN: minBin,
@@ -2417,11 +2418,12 @@
       var best = evaluated[0];
       if (!best) throw new Error('No ' + qualityLabel + ' player had enough live listings to price safely');
 
+      state.quickFlip.scoutResults = evaluated.slice(0, 8);
       state.quickFlip.candidate = best;
       state.quickFlip.scannedAt = Date.now();
       state.quickFlip.status = best.immediate
-        ? 'Opportunity found'
-        : 'Best liquid ' + qualityLabel + ' found · waiting up to 75s for entry';
+        ? 'Opportunity now · manual snipe ≤ ' + best.maxBid.toLocaleString()
+        : 'Best ' + qualityLabel + ' candidate · manual snipe ≤ ' + best.maxBid.toLocaleString();
 
       state.market = {
         absMinBIN: best.minBin,
@@ -3236,6 +3238,75 @@
         : 'No scan yet';
     }
 
+    var scoutCount = document.querySelector('#fcp-scout-count');
+    var scoutList = document.querySelector('#fcp-scout-results');
+    var scoutRows = q.scoutResults || [];
+    if (scoutCount) scoutCount.textContent = scoutRows.length + ' candidate' + (scoutRows.length === 1 ? '' : 's');
+
+    if (scoutList) {
+      scoutList.innerHTML = '';
+      scoutRows.forEach(function (row, index) {
+        var card = document.createElement('div');
+        card.className = 'fcp-scout-card' + (index === 0 ? ' best' : '');
+
+        var top = document.createElement('div');
+        top.className = 'fcp-scout-card-top';
+
+        var identity = document.createElement('div');
+        identity.className = 'fcp-scout-identity';
+        var title = document.createElement('b');
+        title.textContent = row.name + ' · ' + row.rating;
+        var meta = document.createElement('small');
+        meta.textContent = (index === 0 ? 'BEST · ' : '') + (row.sample || 0) + ' live listings';
+        identity.appendChild(title);
+        identity.appendChild(meta);
+
+        var target = document.createElement('div');
+        target.className = 'fcp-scout-target';
+        var targetLabel = document.createElement('small');
+        targetLabel.textContent = 'SNIPE ≤';
+        var targetValue = document.createElement('b');
+        targetValue.textContent = row.maxBid ? row.maxBid.toLocaleString() : '—';
+        target.appendChild(targetLabel);
+        target.appendChild(targetValue);
+
+        top.appendChild(identity);
+        top.appendChild(target);
+
+        var metrics = document.createElement('div');
+        metrics.className = 'fcp-scout-metrics';
+
+        [
+          ['Market', row.stableBIN],
+          ['Min BIN', row.minBin],
+          ['Profit', row.expectedProfit, true]
+        ].forEach(function (entry) {
+          var box = document.createElement('span');
+          var l = document.createElement('small');
+          l.textContent = entry[0];
+          var v = document.createElement('b');
+          var value = Number(entry[1]) || 0;
+          v.textContent = value
+            ? ((entry[2] && value >= 0 ? '+' : '') + value.toLocaleString())
+            : '—';
+          box.appendChild(l);
+          box.appendChild(v);
+          metrics.appendChild(box);
+        });
+
+        card.appendChild(top);
+        card.appendChild(metrics);
+        scoutList.appendChild(card);
+      });
+
+      if (!scoutRows.length) {
+        var empty = document.createElement('div');
+        empty.className = 'fcp-scout-empty';
+        empty.textContent = 'Run Scan Market to find manual snipe targets.';
+        scoutList.appendChild(empty);
+      }
+    }
+
     var cQuality = document.querySelector('#fcp-cond-quality');
     var cMin = document.querySelector('#fcp-cond-profit');
     var cBid = document.querySelector('#fcp-cond-bid');
@@ -3265,50 +3336,51 @@
 
   function render() {
     var status = document.querySelector('#fcp-state');
-    var start = document.querySelector('#fcp-start');
-    var trades = document.querySelector('#fcp-trades');
-    var profit = document.querySelector('#fcp-profit');
+    var headState = document.querySelector('#fcp-headstate');
 
     if (status) {
-      status.textContent = state.running ? (state.busy ? 'WORKING' : 'AUTO') : 'STOPPED';
-      status.dataset.on = state.running ? '1' : '0';
+      status.textContent = state.silverScanning ? 'SCANNING' : 'MANUAL';
+      status.dataset.on = state.silverScanning ? '1' : '0';
     }
+    if (headState) headState.textContent = 'SCOUT';
 
-    if (start) {
-      start.textContent = state.running ? 'STOP AUTO TRADE' : 'AUTO TRADE';
-      start.dataset.on = state.running ? '1' : '0';
-    }
-
-    if (trades) trades.textContent = state.trades + '/' + state.maxTrades;
-    if (profit) profit.textContent = state.daily.realizedProfit.toLocaleString();
-    var headState = document.querySelector('#fcp-headstate');
-    var dry = document.querySelector('#fcp-dry');
-    if (headState && dry) headState.textContent = dry.checked ? 'DRY' : 'LIVE';
     renderMarket();
     renderQuickFlip();
   }
 
   function readUI() {
-    function val(id) { return coin(document.querySelector(id) ? document.querySelector(id).value : 0); }
-    function checked(id) { return !!(document.querySelector(id) && document.querySelector(id).checked); }
+    function val(id) {
+      var el = document.querySelector(id);
+      return coin(el ? el.value : 0);
+    }
 
-    state.dryRun = checked('#fcp-dry');
-    state.autoBid = checked('#fcp-autobid');
-    state.autoBuyNow = checked('#fcp-autobin');
-    state.autoSell = checked('#fcp-autosell');
-    state.showAltPositions = checked('#fcp-altpositions');
-    state.showCardPrices = checked('#fcp-cardprices');
+    // v0.9 Scout mode is deliberately read-only.
+    state.running = false;
+    state.busy = false;
+    state.liveTrade = null;
+    state.dryRun = true;
+    state.autoBid = false;
+    state.autoBuyNow = false;
+    state.autoSell = false;
+
+    var alt = document.querySelector('#fcp-altpositions');
+    var prices = document.querySelector('#fcp-cardprices');
+    if (alt) state.showAltPositions = !!alt.checked;
+    if (prices) state.showCardPrices = !!prices.checked;
+
     var qualityRadio = document.querySelector('input[name="fcp-quality"]:checked');
     if (qualityRadio) state.quickFlipQuality = lower(qualityRadio.value || 'silver');
+
     state.quickFlipPreferredProfit = Math.max(0, val('#fcp-targetprofit') || 500);
-    state.minProfit = Math.max(0, val('#fcp-minprofit'));
-    state.maxBidCap = Math.max(0, val('#fcp-bidcap'));
-    state.maxBinBuy = Math.max(0, val('#fcp-maxbin'));
-    state.maxTrades = Math.max(1, val('#fcp-maxtrades') || 10);
-    state.sessionMinutes = Math.max(1, Number(document.querySelector('#fcp-session').value || 60));
-    state.dailyTarget = Math.max(0, val('#fcp-dailytarget') || 100000);
-    state.pollMs = Math.max(1800, Number(document.querySelector('#fcp-delay').value || 2.5) * 1000);
-    state.maxScanPages = Math.max(1, Math.min(100, coin(document.querySelector('#fcp-maxscanpages').value) || 40));
+    state.minProfit = Math.max(0, val('#fcp-minprofit') || 300);
+    state.maxBidCap = 0;
+    state.maxBinBuy = 0;
+
+    var pageCap = document.querySelector('#fcp-maxscanpages');
+    if (pageCap) {
+      state.maxScanPages = Math.max(1, Math.min(100, coin(pageCap.value) || 40));
+    }
+
     saveSettings();
     render();
   }
@@ -4526,7 +4598,7 @@
             '<div class="fcp-result-player"><small>PLAYER</small><b id="fcp-result-player">—</b></div>' +
             '<div><small>MARKET</small><b id="fcp-result-market">—</b></div>' +
             '<div><small>PRICE RANGE</small><b id="fcp-result-range">—</b></div>' +
-            '<div><small>MAX ENTRY</small><b id="fcp-result-maxbid">—</b></div>' +
+            '<div><small>SNIPE ≤</small><b id="fcp-result-maxbid">—</b></div>' +
             '<div><small>TARGET PROFIT</small><b id="fcp-result-profit">—</b></div>' +
           '</div>' +
           '<div id="fcp-result-meta" class="fcp-result-meta">No scan yet</div>' +
