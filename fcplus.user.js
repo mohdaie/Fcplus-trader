@@ -567,9 +567,9 @@
         currentBid: Number(auction && auction.currentBid) || 0,
         timeSeconds: Number(auction && auction.expires) || 999999,
         marketAverage: Number(item && item._marketAverage) || 0,
-        leagueId: Number(item && item._staticData && (item._staticData.leagueId || item._staticData.league)) || 0,
-        clubId: Number(item && item._staticData && (item._staticData.teamId || item._staticData.clubId || item._staticData.team)) || 0,
-        nationId: Number(item && item._staticData && (item._staticData.nationId || item._staticData.nation)) || 0,
+        leagueId: Number(item && (item.leagueId || (item._staticData && (item._staticData.leagueId || item._staticData.league)))) || 0,
+        clubId: Number(item && (item.teamId || item.clubId || (item._staticData && (item._staticData.teamId || item._staticData.clubId || item._staticData.team)))) || 0,
+        nationId: Number(item && (item.nationId || (item._staticData && (item._staticData.nationId || item._staticData.nation)))) || 0,
         rare: !!(item && (item.rareflag || item._rareflag || (item._staticData && item._staticData.rareflag))),
         level: String(item && (item.level || item._level || item.quality || '') || '').toLowerCase(),
         rawItem: item
@@ -1287,14 +1287,208 @@
     };
   }
 
+  function eaRepositoryEntity(kind, id) {
+    id = Number(id) || 0;
+    if (!id) return null;
+
+    var w = pageWindow();
+    var repos = w && w.repositories;
+    if (!repos) return null;
+
+    var names = kind === 'league' ? ['League','TeamConfig'] :
+      kind === 'club' ? ['Team','Club','TeamConfig'] :
+      ['Nation','Nationality','TeamConfig'];
+
+    var methods = kind === 'league'
+      ? ['getLeagueById','getById','get','findById']
+      : kind === 'club'
+        ? ['getTeamById','getClubById','getById','get','findById']
+        : ['getNationById','getNationalityById','getById','get','findById'];
+
+    for (var n = 0; n < names.length; n++) {
+      var repo = repos[names[n]];
+      if (!repo) continue;
+
+      if (kind === 'league' && typeof repo.getLeagues === 'function') {
+        try {
+          var leagues = safeArray(repo.getLeagues());
+          var league = leagues.find(function (x) { return Number(x && x.id) === id; });
+          if (league) return league;
+        } catch (e) {}
+      }
+
+      if (kind === 'club' && typeof repo.getTeams === 'function') {
+        try {
+          var teams = safeArray(repo.getTeams());
+          var team = teams.find(function (x) { return Number(x && x.id) === id; });
+          if (team) return team;
+        } catch (e) {}
+      }
+
+      if (kind === 'nation' && typeof repo.getNations === 'function') {
+        try {
+          var nations = safeArray(repo.getNations());
+          var nation = nations.find(function (x) { return Number(x && x.id) === id; });
+          if (nation) return nation;
+        } catch (e) {}
+      }
+
+      for (var m = 0; m < methods.length; m++) {
+        try {
+          if (typeof repo[methods[m]] === 'function') {
+            var found = repo[methods[m]](id);
+            if (found) return found;
+          }
+        } catch (e) {}
+      }
+
+      try {
+        var collection = repo._collection || repo.items || repo.data;
+        if (collection) {
+          if (collection[id]) return collection[id];
+          if (typeof collection.get === 'function') {
+            var got = collection.get(id);
+            if (got) return got;
+          }
+          var values = safeArray(collection);
+          var match = values.find(function (x) { return Number(x && x.id) === id; });
+          if (match) return match;
+        }
+      } catch (e) {}
+    }
+
+    return null;
+  }
+
+  function localizeEaLabel(value) {
+    var label = text(value);
+    if (!label) return '';
+    var w = pageWindow();
+    try {
+      var service = w.services && w.services.Localization;
+      if (service && typeof service.localize === 'function') {
+        var localized = service.localize(label);
+        if (localized && localized !== label) return text(localized);
+      }
+    } catch (e) {}
+    return label;
+  }
+
+  function entityName(kind, id) {
+    var entity = eaRepositoryEntity(kind, id);
+    if (!entity) return id ? (kind + ' ' + id) : '—';
+
+    var candidates = [
+      entity.name,
+      entity.localizedName,
+      entity.displayName,
+      entity.fullName,
+      entity.abbreviation,
+      entity.abbrName,
+      entity._name
+    ];
+    for (var i = 0; i < candidates.length; i++) {
+      var value = localizeEaLabel(candidates[i]);
+      if (value && value !== '[object Object]') return value;
+    }
+    return id ? (kind + ' ' + id) : '—';
+  }
+
+  function countryFlag(name, entity) {
+    var code = '';
+    var candidates = entity ? [
+      entity.countryCode, entity.isoCode, entity.iso2, entity.alpha2,
+      entity.abbreviation, entity.abbrName
+    ] : [];
+    for (var i = 0; i < candidates.length; i++) {
+      var candidate = text(candidates[i]).toUpperCase();
+      if (/^[A-Z]{2}$/.test(candidate)) { code = candidate; break; }
+    }
+
+    if (!code) {
+      var map = {
+        'argentina':'AR','australia':'AU','austria':'AT','belgium':'BE','brazil':'BR',
+        'canada':'CA','chile':'CL','china pr':'CN','china':'CN','colombia':'CO','croatia':'HR',
+        'czech republic':'CZ','czechia':'CZ','denmark':'DK','ecuador':'EC','england':'GB',
+        'finland':'FI','france':'FR','germany':'DE','ghana':'GH','greece':'GR','hungary':'HU',
+        'iceland':'IS','india':'IN','ireland':'IE','italy':'IT','japan':'JP','korea republic':'KR',
+        'south korea':'KR','malaysia':'MY','mexico':'MX','morocco':'MA','netherlands':'NL',
+        'new zealand':'NZ','nigeria':'NG','norway':'NO','paraguay':'PY','peru':'PE','poland':'PL',
+        'portugal':'PT','romania':'RO','saudi arabia':'SA','scotland':'GB','senegal':'SN',
+        'serbia':'RS','singapore':'SG','slovakia':'SK','slovenia':'SI','south africa':'ZA',
+        'spain':'ES','sweden':'SE','switzerland':'CH','tunisia':'TN','turkey':'TR','türkiye':'TR',
+        'ukraine':'UA','united states':'US','usa':'US','uruguay':'UY','wales':'GB'
+      };
+      code = map[lower(name)] || '';
+    }
+
+    if (!code) return '';
+    return code.replace(/./g, function (char) {
+      return String.fromCodePoint(127397 + char.charCodeAt(0));
+    });
+  }
+
+  function playerQuality(row) {
+    var item = row && row.rawItem;
+    try { if (item && typeof item.isSpecial === 'function' && item.isSpecial()) return 'Special'; } catch (e) {}
+    try { if (item && typeof item.isGoldRating === 'function' && item.isGoldRating()) return 'Gold'; } catch (e) {}
+    try { if (item && typeof item.isSilverRating === 'function' && item.isSilverRating()) return 'Silver'; } catch (e) {}
+    try { if (item && typeof item.isBronzeRating === 'function' && item.isBronzeRating()) return 'Bronze'; } catch (e) {}
+
+    var level = lower(row && row.level);
+    if (level.indexOf('gold') >= 0) return 'Gold';
+    if (level.indexOf('silver') >= 0) return 'Silver';
+    if (level.indexOf('bronze') >= 0) return 'Bronze';
+
+    var rating = Number(row && row.rating) || 0;
+    if (rating >= 75) return 'Gold';
+    if (rating >= 65) return 'Silver';
+    return 'Bronze';
+  }
+
+  function enrichPlayerMetadata(row) {
+    var staticData = row && row.rawItem && row.rawItem._staticData || {};
+    if (!row.clubId) row.clubId = Number(row.rawItem && (row.rawItem.teamId || row.rawItem.clubId) || staticData.teamId || staticData.clubId) || 0;
+    if (!row.leagueId) row.leagueId = Number(row.rawItem && row.rawItem.leagueId || staticData.leagueId) || 0;
+    if (!row.nationId) row.nationId = Number(row.rawItem && row.rawItem.nationId || staticData.nationId) || 0;
+
+    row.qualityLabel = playerQuality(row);
+    row.clubName = entityName('club', row.clubId);
+    row.leagueName = entityName('league', row.leagueId);
+    row.nationName = entityName('nation', row.nationId);
+    row.nationFlag = countryFlag(row.nationName, eaRepositoryEntity('nation', row.nationId));
+    return row;
+  }
+
+  function requirementEntityLabel(kind, values) {
+    if (!values || values.length !== 1) return values && values.length ? values.join(', ') : '';
+    var id = Number(values[0]) || 0;
+    return id ? entityName(kind, id) : text(values[0]);
+  }
+
   function sbcRequirementText(row) {
-    var parts = [row.type];
+    var key = text(row.predicateType || row.type).toUpperCase();
+
+    if (key === 'PLAYER_QUALITY') return 'Player quality · ' + (row.quality || text(row.value) || 'Any');
+    if (key === 'LEAGUE_ID') return 'League · ' + requirementEntityLabel('league', row.predicateValues);
+    if (key === 'CLUB_ID') return 'Club · ' + requirementEntityLabel('club', row.predicateValues);
+    if (key === 'NATION_ID') return 'Nation · ' + requirementEntityLabel('nation', row.predicateValues);
+    if (key === 'TEAM_RATING') return 'Squad rating · ' + (row.overall || row.value || '—');
+    if (key === 'CHEMISTRY_POINTS') return 'Squad chemistry · ' + (row.chemistry || row.value || '—');
+    if (key === 'SAME_CLUB_COUNT') return 'Players from same club · ' + (row.count || row.value || '—');
+    if (key === 'SAME_LEAGUE_COUNT') return 'Players from same league · ' + (row.count || row.value || '—');
+    if (key === 'SAME_NATION_COUNT') return 'Players from same nation · ' + (row.count || row.value || '—');
+    if (key === 'LEAGUE_COUNT') return 'Leagues in squad · ' + (row.count || row.value || '—');
+    if (key === 'CLUB_COUNT') return 'Clubs in squad · ' + (row.count || row.value || '—');
+    if (key === 'NATION_COUNT') return 'Nations in squad · ' + (row.count || row.value || '—');
+    if (key === 'PLAYER_COUNT') return 'Player count · ' + (row.count || row.value || '—');
+
+    var parts = [text(row.type || 'Requirement')];
     if (row.scope) parts.push(row.scope);
     if (row.count) parts.push('count ' + row.count);
     if (row.overall) parts.push('rating ' + row.overall);
     if (row.chemistry) parts.push('chem ' + row.chemistry);
     if (row.quality) parts.push(row.quality);
-    if (row.predicateType) parts.push(row.predicateType);
     if (row.predicateValues && row.predicateValues.length) parts.push(row.predicateValues.join(', '));
     return parts.join(' · ');
   }
@@ -1313,37 +1507,26 @@
     };
 
     requirements.forEach(function (row) {
-      var type = lower(row.type);
-      var predicate = lower(row.predicateType);
-      var scope = lower(row.scope);
+      var key = text(row.predicateType || row.type).toUpperCase();
       var mapped = false;
 
-      var q = lower(row.quality);
-      if (q.indexOf('bronze') >= 0) { params.level = 'bronze'; mapped = true; }
-      if (q.indexOf('silver') >= 0) { params.level = 'silver'; mapped = true; }
-      if (q.indexOf('gold') >= 0) { params.level = 'gold'; mapped = true; }
-
-      if (type.indexOf('overall') >= 0 && row.overall) {
-        if (scope.indexOf('less') >= 0 || scope.indexOf('max') >= 0) {
-          params.maxRating = params.maxRating ? Math.min(params.maxRating, row.overall) : row.overall;
-        } else {
-          params.minRating = Math.max(params.minRating, row.overall);
-        }
-        mapped = true;
-      }
-
-      if ((predicate.indexOf('is_rare') >= 0 || predicate === 'rare') && row.count) {
-        params.rareOnly = true;
-        mapped = true;
+      if (key === 'PLAYER_QUALITY') {
+        var q = lower(row.quality || row.value);
+        if (q.indexOf('bronze') >= 0) params.level = 'bronze';
+        else if (q.indexOf('silver') >= 0) params.level = 'silver';
+        else if (q.indexOf('gold') >= 0) params.level = 'gold';
+        if (params.level !== 'any') mapped = true;
       }
 
       if (row.predicateValues && row.predicateValues.length === 1) {
         var id = Number(row.predicateValues[0]) || 0;
-        if (id && predicate.indexOf('league') >= 0) { params.leagueId = id; mapped = true; }
-        if (id && (predicate.indexOf('nation') >= 0 || predicate.indexOf('national') >= 0)) { params.nationId = id; mapped = true; }
-        if (id && (predicate.indexOf('club') >= 0 || predicate.indexOf('team') >= 0)) { params.clubId = id; mapped = true; }
+        if (key === 'LEAGUE_ID' && id) { params.leagueId = id; mapped = true; }
+        if (key === 'NATION_ID' && id) { params.nationId = id; mapped = true; }
+        if (key === 'CLUB_ID' && id) { params.clubId = id; mapped = true; }
       }
 
+      // EA's own Squad Builder applies only CLUB_ID, LEAGUE_ID, NATION_ID and PLAYER_QUALITY
+      // as individual-player search filters. Rating, chemistry and count rules remain squad-level.
       (mapped ? params.mapped : params.unmapped).push(sbcRequirementText(row));
     });
 
