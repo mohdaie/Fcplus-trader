@@ -944,10 +944,29 @@
     if (!services || !services.Item || typeof services.Item.list !== 'function') {
       throw new Error('EA listing service unavailable');
     }
-    var step = priceStep(sellBIN);
-    var start = legalDown(Math.max(150, sellBIN - step));
-    var response = await observeEaRequest(services.Item.list(item, start, sellBIN, 3600), 12000);
-    return { start: start, bin: sellBIN, duration: 3600, response: response };
+
+    var limits = item && item._itemPriceLimits || {};
+    var floor = Math.max(0, Number(limits.minimum) || 0);
+    var ceiling = Math.max(0, Number(limits.maximum) || 0);
+
+    var requestedBIN = legalDown(sellBIN);
+    var legalBIN = Math.max(floor || 150, requestedBIN);
+    if (ceiling > 0) legalBIN = Math.min(legalBIN, ceiling);
+
+    var step = priceStep(legalBIN);
+    var start = legalDown(Math.max(floor || 150, legalBIN - step));
+    if (ceiling > 0) start = Math.min(start, ceiling);
+    if (start > legalBIN) start = legalBIN;
+
+    var response = await observeEaRequest(services.Item.list(item, start, legalBIN, 3600), 12000);
+    return {
+      start: start,
+      bin: legalBIN,
+      duration: 3600,
+      priceFloor: floor,
+      priceCeiling: ceiling,
+      response: response
+    };
   }
 
   async function requestWatchedItemsDirect() {
@@ -1140,8 +1159,13 @@
     }
 
     var price = Number(decision.price) || 0;
-    if (!price || price > maxEntry) {
-      log('LIVE BLOCKED · entry ' + price.toLocaleString() + ' is above max ' + maxEntry.toLocaleString());
+    var legalFloor = Number(candidate.priceFloor) || Number(decision.row.priceMin) || 0;
+    if (!price || price > maxEntry || (legalFloor > 0 && price < legalFloor)) {
+      log(
+        'LIVE BLOCKED · entry ' + price.toLocaleString() +
+        ' outside legal range ' + (legalFloor ? legalFloor.toLocaleString() : '—') +
+        '–' + maxEntry.toLocaleString()
+      );
       return;
     }
 
@@ -1155,6 +1179,7 @@
       buyPrice: price,
       market: stable,
       maxEntry: maxEntry,
+      priceFloor: Number(candidate.priceFloor) || Number(decision.row.priceMin) || 0,
       startedAt: Date.now(),
       status: decision.type === 'BIN' ? 'submitting_bin' : 'submitting_bid'
     };
