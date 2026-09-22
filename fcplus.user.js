@@ -2461,7 +2461,7 @@
       state.silverScanning = false;
       if (scanButton) {
         scanButton.disabled = false;
-        scanButton.textContent = 'SCAN PLAYER';
+        scanButton.textContent = 'SCAN MARKET';
       }
     }
   }
@@ -4700,29 +4700,6 @@
       scanQuickFlipPlayers();
     });
 
-    root.querySelector('#fcp-start').addEventListener('click', function () {
-      if (state.running) {
-        stop('Stopped by user');
-      } else {
-        if (!state.quickFlip || !state.quickFlip.candidate) {
-          log('Scan Player first so FC+ can choose a Quick Flip candidate');
-          return;
-        }
-        start();
-      }
-    });
-
-    root.querySelector('#fcp-mode-toggle').addEventListener('click', function () {
-      if (state.running) {
-        log('Stop Auto Trade before changing Dry/Live mode');
-        return;
-      }
-      var dry = root.querySelector('#fcp-dry');
-      if (dry) dry.checked = !dry.checked;
-      readUI();
-      log('TRADE MODE · ' + (state.dryRun ? 'Dry Run' : 'LIVE'));
-    });
-
     root.querySelector('#fcp-edit-conditions').addEventListener('click', function () {
       var fold = root.querySelector('#fcp-settings-fold');
       if (!fold) return;
@@ -4758,13 +4735,9 @@
     Array.from(root.querySelectorAll('input')).forEach(function (input) {
       input.addEventListener('change', function () {
         if (input.name === 'fcp-quality') {
-          if (state.running) {
-            renderQuickFlip();
-            log('Stop Auto Trade before changing Quick Flip quality');
-            return;
-          }
           state.quickFlipQuality = lower(input.value || 'silver');
           state.quickFlip.candidate = null;
+          state.quickFlip.scoutResults = [];
           state.quickFlip.scannedAt = 0;
           state.quickFlip.scannedListings = 0;
           state.quickFlip.uniquePlayers = 0;
@@ -4772,21 +4745,19 @@
           state.quickFlip.status = 'Ready to scan ' + quickFlipQualityLabel() + ' players';
           saveSettings();
           render();
-          log('QUICK FLIP · quality changed to ' + quickFlipQualityLabel());
+          log('SCOUT · quality changed to ' + quickFlipQualityLabel());
           return;
         }
 
-        if (!state.running) readUI();
+        readUI();
         if (input.id === 'fcp-altpositions' || input.id === 'fcp-cardprices') refreshVisibleAltPositions();
-        var hs = root.querySelector('#fcp-headstate');
-        if (hs) hs.textContent = root.querySelector('#fcp-dry').checked ? 'DRY' : 'LIVE';
         renderQuickFlip();
       });
     });
 
     render();
     renderSbcPanel();
-    log('Ready · FC+ Quick Flip workflow loaded');
+    log('Ready · FC+ Market Scout · manual trading only');
 
     installNativeInteractionBridge();
     installPlayerCardEnhancer();
@@ -4834,6 +4805,22 @@
     '#' + APP_ID + ' #fcp-action{margin-top:9px;padding:9px;border-radius:9px;background:#172431;color:#dce4e9;font-size:10px}' +
     '#' + APP_ID + ' .fcp-start{width:100%;margin-top:9px;padding:13px;border:0;border-radius:10px;background:#00d978;color:#06150d;font-weight:900;font-size:13px}' +
     '#' + APP_ID + ' .fcp-start[data-on="1"]{background:#ff5865;color:#fff}' +
+    '#' + APP_ID + ' .fcp-scout-list-title{margin:13px 0 7px;color:#ffffff60;font-size:8px;font-weight:900;letter-spacing:.11em}' +
+    '#' + APP_ID + ' .fcp-scout-results{display:flex;flex-direction:column;gap:8px}' +
+    '#' + APP_ID + ' .fcp-scout-card{padding:10px;border-radius:11px;background:#172431;border:1px solid #ffffff10}' +
+    '#' + APP_ID + ' .fcp-scout-card.best{border-color:#00d97866;background:#173229}' +
+    '#' + APP_ID + ' .fcp-scout-card-top{display:flex;align-items:center;justify-content:space-between;gap:10px}' +
+    '#' + APP_ID + ' .fcp-scout-identity{min-width:0}' +
+    '#' + APP_ID + ' .fcp-scout-identity b{display:block;color:#fff;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
+    '#' + APP_ID + ' .fcp-scout-identity small{display:block;margin-top:2px;color:#ffffff60;font-size:8px}' +
+    '#' + APP_ID + ' .fcp-scout-target{flex:0 0 auto;text-align:right}' +
+    '#' + APP_ID + ' .fcp-scout-target small{display:block;color:#ffffff55;font-size:7px}' +
+    '#' + APP_ID + ' .fcp-scout-target b{display:block;color:#7dffc0;font-size:14px}' +
+    '#' + APP_ID + ' .fcp-scout-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:8px}' +
+    '#' + APP_ID + ' .fcp-scout-metrics span{padding:7px;border-radius:8px;background:#101a24;min-width:0}' +
+    '#' + APP_ID + ' .fcp-scout-metrics small{display:block;color:#ffffff55;font-size:7px}' +
+    '#' + APP_ID + ' .fcp-scout-metrics b{display:block;margin-top:2px;color:#fff;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
+    '#' + APP_ID + ' .fcp-scout-empty{padding:11px;border-radius:9px;background:#172431;color:#ffffff60;font-size:9px}' +
     '#' + APP_ID + ' #fcp-log{margin-top:9px;max-height:112px;overflow:auto;padding:8px;border-radius:8px;background:#0d1720;color:#ffffff70;font:9px/1.45 ui-monospace,monospace}' +
     '#' + APP_ID + ' #fcp-log div{padding:2px 0;border-bottom:1px solid #ffffff08}' +
 
