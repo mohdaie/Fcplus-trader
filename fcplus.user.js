@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC+ Auto Trader Mobile
 // @namespace    https://fcplus.local/
-// @version      0.7.0
+// @version      0.7.1
 // @description  FC+ Silver Quickflip market scanner, auto trader, card pricing and diagnostics for the EA FC Web App.
 // @homepageURL  https://github.com/mohdaie/Fcplus-trader
 // @updateURL    https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
@@ -20,11 +20,11 @@
 (function () {
   'use strict';
 
-  var APP_ID = 'fcplus-auto-v070';
+  var APP_ID = 'fcplus-auto-v071';
   if (document.getElementById(APP_ID)) return;
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
-  function text(v) { return (v || '').replace(/\s+/g, ' ').trim(); }
+  function text(v) { return String(v === undefined || v === null ? '' : v).replace(/\s+/g, ' ').trim(); }
   function lower(v) { return text(v).toLowerCase(); }
   function coin(v) { return Number(String(v || '').replace(/[^\d]/g, '')) || 0; }
   function today() { return new Date().toISOString().slice(0, 10); }
@@ -1185,32 +1185,104 @@
     }).filter(function (value) { return value !== '' && value !== null && value !== undefined; });
   }
 
+  function sbcEligibilityKeyName(key) {
+    var w = pageWindow();
+    var map = w && w.SBCEligibilityKey;
+    if (map && typeof map === 'object') {
+      for (var name in map) {
+        try { if (map[name] === key) return name; } catch (e) {}
+      }
+    }
+    return text(key);
+  }
+
+  function scalarValue(value) {
+    if (value === undefined || value === null) return '';
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
+    if (Array.isArray(value)) return value.length === 1 ? scalarValue(value[0]) : value.map(scalarValue);
+    if (typeof value === 'object') {
+      var candidate = readRequirementValue(value, [
+        'value','id','count','name','type','key','assetId','leagueId','clubId','nationId','quality','rating'
+      ]);
+      if (candidate !== null && candidate !== value) return scalarValue(candidate);
+    }
+    return text(value);
+  }
+
+  function qualityFromEligibilityValue(value) {
+    var raw = scalarValue(value);
+    var n = Number(raw);
+    if (n === 1) return 'Bronze';
+    if (n === 2) return 'Silver';
+    if (n === 3) return 'Gold';
+    var s = lower(raw);
+    if (s.indexOf('bronze') >= 0) return 'Bronze';
+    if (s.indexOf('silver') >= 0) return 'Silver';
+    if (s.indexOf('gold') >= 0) return 'Gold';
+    return text(raw);
+  }
+
   function normalizeSbcRequirement(req, index) {
     var ctor = '';
     try { ctor = req && req.constructor && req.constructor.name || ''; } catch (e) {}
-    var type = text(readRequirementValue(req, [
+
+    var firstKey = null;
+    var firstValue = null;
+    try {
+      if (req && typeof req.getFirstKey === 'function') {
+        firstKey = req.getFirstKey();
+        if (typeof req.getFirstValue === 'function') firstValue = req.getFirstValue(firstKey);
+      }
+    } catch (e) {}
+
+    if (firstKey !== null && firstKey !== undefined) {
+      var keyName = sbcEligibilityKeyName(firstKey);
+      var value = scalarValue(firstValue);
+      var row = {
+        index: index,
+        type: keyName || ctor || ('Requirement ' + (index + 1)),
+        scope: '',
+        count: 0,
+        overall: 0,
+        chemistry: 0,
+        quality: '',
+        predicateType: keyName,
+        predicateValues: [],
+        value: value,
+        raw: req
+      };
+
+      if (keyName === 'PLAYER_QUALITY') row.quality = qualityFromEligibilityValue(value);
+      else if (keyName === 'TEAM_RATING') row.overall = Number(value) || 0;
+      else if (keyName === 'CHEMISTRY_POINTS') row.chemistry = Number(value) || 0;
+      else if (/COUNT$/.test(keyName)) row.count = Math.abs(Number(value) || 0);
+      else if (keyName === 'LEAGUE_ID' || keyName === 'CLUB_ID' || keyName === 'NATION_ID') {
+        row.predicateValues = normalizePredicateValues(value);
+      } else if (value !== '') {
+        row.predicateValues = normalizePredicateValues(value);
+      }
+      return row;
+    }
+
+    var typeValue = scalarValue(readRequirementValue(req, [
       'challengeTypeName','requirementType','typeName','className','type','_type'
-    ]) || ctor || ('Requirement ' + (index + 1)));
-    var scope = text(readRequirementValue(req, ['scope','operation','comparison','_scope']) || '');
-    var count = Number(readRequirementValue(req, ['count','requiredCount','minCount','valueCount'])) || 0;
-    var overall = Number(readRequirementValue(req, ['overallValue','overall','rating','minRating'])) || 0;
-    var chemistry = Number(readRequirementValue(req, ['chemistryValue','chemistry','minChemistry'])) || 0;
-    var quality = text(readRequirementValue(req, ['playerQuality','quality','level']) || '');
-    var predicateType = text(readRequirementValue(req, ['predicateType','predicate','filterType','_predicateType']) || '');
-    var predicateValues = normalizePredicateValues(
-      readRequirementValue(req, ['predicateValues','values','value','ids','_predicateValues'])
-    );
+    ]));
+    var scopeValue = scalarValue(readRequirementValue(req, ['scope','operation','comparison','_scope']));
+    var qualityValue = scalarValue(readRequirementValue(req, ['playerQuality','quality','level']));
+    var predicateValue = scalarValue(readRequirementValue(req, ['predicateType','predicate','filterType','_predicateType']));
 
     return {
       index: index,
-      type: type,
-      scope: scope,
-      count: count,
-      overall: overall,
-      chemistry: chemistry,
-      quality: quality,
-      predicateType: predicateType,
-      predicateValues: predicateValues,
+      type: text(typeValue || ctor || ('Requirement ' + (index + 1))),
+      scope: text(scopeValue || ''),
+      count: Number(readRequirementValue(req, ['count','requiredCount','minCount','valueCount'])) || 0,
+      overall: Number(readRequirementValue(req, ['overallValue','overall','rating','minRating'])) || 0,
+      chemistry: Number(readRequirementValue(req, ['chemistryValue','chemistry','minChemistry'])) || 0,
+      quality: text(qualityValue || ''),
+      predicateType: text(predicateValue || ''),
+      predicateValues: normalizePredicateValues(
+        readRequirementValue(req, ['predicateValues','values','value','ids','_predicateValues'])
+      ),
       raw: req
     };
   }
