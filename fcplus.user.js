@@ -2124,6 +2124,11 @@
       return;
     }
 
+    if (!state.dryRun) {
+      log('LIVE not enabled in v0.5.2 · exact candidate execution is the next step');
+      return;
+    }
+
     state.running = true;
     state.busy = false;
     state.trades = 0;
