@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FC+ Auto Trader Mobile
 // @namespace    https://fcplus.local/
-// @version      0.3.3
+// @version      0.3.4
 // @description  Mobile FC Web App market scanner, auto bid/rebid, auto relist, and hard trading limits.
 // @homepageURL  https://github.com/mohdaie/Fcplus-trader
 // @updateURL    https://raw.githubusercontent.com/mohdaie/Fcplus-trader/main/fcplus.user.js
@@ -9,15 +9,18 @@
 // @match        https://ea.com/*
 // @match        https://*.ea.com/*
 // @grant        GM_addStyle
+// @grant        GM_xmlhttpRequest
+// @grant        unsafeWindow
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @connect      www.fut.gg
 // @run-at       document-idle
 // ==/UserScript==
 
 (function () {
   'use strict';
 
-  var APP_ID = 'fcplus-auto-v033';
+  var APP_ID = 'fcplus-auto-v034';
   if (document.getElementById(APP_ID)) return;
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -56,7 +59,25 @@
     lastWinKey: '',
     scanningAll: false,
     fastScanning: false,
-    market: { absMinBIN: 0, stableBIN: 0, minBid: 0, listings: 0, pages: 0, probes: 0, scannedAt: 0, fullScan: false, fastScan: false },
+    smartScanning: false,
+    market: {
+      absMinBIN: 0,
+      stableBIN: 0,
+      minBid: 0,
+      listings: 0,
+      pages: 0,
+      probes: 0,
+      scannedAt: 0,
+      fullScan: false,
+      fastScan: false,
+      smartScan: false,
+      definitionId: 0,
+      futggPrice: 0,
+      futggSalesMedian: 0,
+      futggStatus: 'not checked',
+      priceSource: 'PAGE',
+      confidence: '—'
+    },
     daily: dailyStored.date === today() ? dailyStored : { date: today(), estimatedProfit: 0, won: 0, listed: 0 }
   });
 
@@ -94,8 +115,10 @@
 
   function pageType() {
     var t = pageText();
-    if (t.indexOf("congratulations, you've won this item for") >= 0) return 'won';
+    // The expanded sell form still contains the old "congratulations" text.
+    // Detect the sell form first so auto-relist can continue.
     if (t.indexOf('list on transfer market') >= 0 && t.indexOf('start price') >= 0 && t.indexOf('buy now price') >= 0) return 'sell';
+    if (t.indexOf("congratulations, you've won this item for") >= 0) return 'won';
     if (t.indexOf('search results') >= 0) return 'results';
     if (t.indexOf('item details') >= 0) return 'details';
     return 'other';
@@ -200,11 +223,11 @@
     var listings = listingCards();
     if (!listings.length) return [];
 
-    // Preserve a recent all-pages valuation for five minutes.
-    var fullScanFresh = state.market.fullScan && state.market.scannedAt &&
-      (Date.now() - state.market.scannedAt < 5 * 60 * 1000);
+    // Preserve an explicit smart / probe / all-pages valuation for five minutes.
+    var referenceFresh = (state.market.smartScan || state.market.fastScan || state.market.fullScan) &&
+      state.market.scannedAt && (Date.now() - state.market.scannedAt < 5 * 60 * 1000);
 
-    if (!fullScanFresh) {
+    if (!referenceFresh) {
       var bins = listings.map(function (x) { return x.buyNow; }).filter(Boolean).sort(function (a, b) { return a - b; });
       var bids = listings.map(function (x) { return x.currentBid || x.startPrice; }).filter(Boolean).sort(function (a, b) { return a - b; });
 
@@ -217,7 +240,14 @@
         scannedAt: Date.now(),
         fullScan: false,
         fastScan: false,
-        probes: 0
+        smartScan: false,
+        probes: 0,
+        definitionId: 0,
+        futggPrice: 0,
+        futggSalesMedian: 0,
+        futggStatus: 'not checked',
+        priceSource: 'PAGE',
+        confidence: 'LOW'
       };
     }
 
@@ -261,10 +291,424 @@
       scannedAt: Date.now(),
       fullScan: true,
       fastScan: false,
-      probes: 0
+      smartScan: false,
+      probes: 0,
+      definitionId: 0,
+      futggPrice: 0,
+      futggSalesMedian: 0,
+      futggStatus: 'not checked',
+      priceSource: 'EA FULL',
+      confidence: 'HIGH'
     };
 
     renderMarket();
+  }
+
+  function medianNumber(values) {
+    var list = (values || []).map(Number).filter(function (x) { return Number.isFinite(x) && x > 0; })
+      .sort(function (a, b) { return a - b; });
+    if (!list.length) return 0;
+    var mid = Math.floor(list.length / 2);
+    return list.length % 2 ? list[mid] : Math.round((list[mid - 1] + list[mid]) / 2);
+  }
+
+  function pageWindow() {
+    try {
+      if (typeof unsafeWindow !== 'undefined' && unsafeWindow) return unsafeWindow;
+    } catch (e) {}
+    return window;
+  }
+
+  function getActiveSearchCriteria() {
+    var w = pageWindow();
+    var app;
+    try { app = w.getAppMain && w.getAppMain(); } catch (e) { app = null; }
+    if (!app) return null;
+
+    var root;
+    try { root = app.getRootViewController && app.getRootViewController(); } catch (e) { root = null; }
+    if (!root) return null;
+
+    var queue = [root];
+    var seen = [];
+    var methodNames = ['getPresentedViewController', 'getCurrentViewController', 'getCurrentController'];
+
+    while (queue.length && seen.length < 80) {
+      var node = queue.shift();
+      if (!node || seen.indexOf(node) >= 0) continue;
+      seen.push(node);
+
+      try {
+        if (node.viewmodel && node.viewmodel.searchCriteria) return node.viewmodel.searchCriteria;
+      } catch (e) {}
+
+      for (var m = 0; m < methodNames.length; m++) {
+        try {
+          if (typeof node[methodNames[m]] === 'function') {
+            var child = node[methodNames[m]]();
+            if (child) queue.push(child);
+          }
+        } catch (e) {}
+      }
+
+      var props = ['leftController', 'rightController', 'currentController', 'presentedViewController'];
+      for (var p = 0; p < props.length; p++) {
+        try {
+          if (node[props[p]]) queue.push(node[props[p]]);
+        } catch (e) {}
+      }
+    }
+
+    return null;
+  }
+
+  function cloneEaCriteria(source, maxBuy) {
+    var w = pageWindow();
+    if (!source || !w.UTSearchCriteriaDTO) return null;
+
+    var criteria = new w.UTSearchCriteriaDTO();
+    var keys = [
+      'count', 'offset', 'maskedDefId', 'defId', 'excludeDefIds',
+      'league', 'club', 'nation', 'level', 'rarities', 'playStyle',
+      'minBid', 'maxBid', 'minBuy', 'maxBuy', 'ovrMin', 'ovrMax',
+      'sortBy', 'evolutionStatus', 'icontraits', 'isExactSearch',
+      'academyOnly', 'type', 'sort', 'authenticity', 'category',
+      'position', 'subtypes', 'zone', 'untradeables', 'cacheable'
+    ];
+
+    keys.forEach(function (key) {
+      try {
+        var value = source[key];
+        if (Array.isArray(value)) value = Array.prototype.slice.call(value);
+        if (value !== undefined) criteria[key] = value;
+      } catch (e) {}
+    });
+
+    try { criteria.count = 20; } catch (e) {}
+    try { criteria.offset = 0; } catch (e) {}
+    if (maxBuy !== undefined && maxBuy !== null) {
+      try { criteria.maxBuy = Math.max(0, Number(maxBuy) || 0); } catch (e) {}
+    }
+
+    return criteria;
+  }
+
+  function normalizeEaItems(items) {
+    return Array.prototype.slice.call(items || []).map(function (item) {
+      var auction = item && item._auction;
+      return {
+        definitionId: Number(item && item.definitionId) || 0,
+        name: text(item && item._staticData && item._staticData.name),
+        rating: Number(item && (item._rating || item.rating)) || 0,
+        buyNow: Number(auction && auction.buyNowPrice) || 0,
+        startPrice: Number(auction && auction.startingBid) || 0,
+        currentBid: Number(auction && auction.currentBid) || 0,
+        timeSeconds: Number(auction && auction.expires) || 999999,
+        marketAverage: Number(item && item._marketAverage) || 0
+      };
+    }).filter(function (x) { return x.buyNow > 0 || x.startPrice > 0; });
+  }
+
+  function eaDirectSearch(maxBuy) {
+    return new Promise(function (resolve, reject) {
+      var w = pageWindow();
+      var services;
+      try { services = w.services; } catch (e) { services = null; }
+
+      if (!services || !services.Item || typeof services.Item.searchTransferMarket !== 'function') {
+        reject(new Error('EA market service unavailable'));
+        return;
+      }
+
+      var source = getActiveSearchCriteria();
+      if (!source) {
+        reject(new Error('Current EA search criteria not found'));
+        return;
+      }
+
+      var criteria = cloneEaCriteria(source, maxBuy);
+      if (!criteria) {
+        reject(new Error('Could not clone EA search criteria'));
+        return;
+      }
+
+      try {
+        if (typeof services.Item.clearTransferMarketCache === 'function') {
+          services.Item.clearTransferMarketCache();
+        }
+      } catch (e) {}
+
+      var finished = false;
+      var timer = setTimeout(function () {
+        if (!finished) {
+          finished = true;
+          reject(new Error('EA direct search timed out'));
+        }
+      }, 9000);
+
+      function done(response) {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+
+        try {
+          var data = response && (response.data || response.response);
+          var items = data && (data.items || data.itemData);
+          if (response && response.success === false) {
+            reject(new Error('EA direct search status ' + (response.status || 'failed')));
+            return;
+          }
+          resolve(normalizeEaItems(items || []));
+        } catch (e) {
+          reject(e);
+        }
+      }
+
+      try {
+        var request = services.Item.searchTransferMarket(criteria, 1);
+        if (request && typeof request.observe === 'function') {
+          var observer = {};
+          request.observe(observer, function (sender, response) {
+            try { if (sender && typeof sender.unobserve === 'function') sender.unobserve(observer); } catch (e) {}
+            done(response);
+          });
+        } else if (request && typeof request.then === 'function') {
+          request.then(done).catch(function (e) {
+            if (!finished) {
+              finished = true;
+              clearTimeout(timer);
+              reject(e);
+            }
+          });
+        } else {
+          clearTimeout(timer);
+          reject(new Error('Unexpected EA search response'));
+        }
+      } catch (e) {
+        clearTimeout(timer);
+        reject(e);
+      }
+    });
+  }
+
+  function gmJsonRequest(method, url, payload) {
+    return new Promise(function (resolve, reject) {
+      if (typeof GM_xmlhttpRequest !== 'function') {
+        reject(new Error('GM_xmlhttpRequest unavailable'));
+        return;
+      }
+
+      GM_xmlhttpRequest({
+        method: method,
+        url: url,
+        data: payload == null ? undefined : JSON.stringify(payload),
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        },
+        timeout: 9000,
+        onload: function (r) {
+          var parsed = null;
+          try { parsed = JSON.parse(r.responseText || '{}'); } catch (e) {}
+          resolve({ status: Number(r.status) || 0, json: parsed, text: r.responseText || '' });
+        },
+        ontimeout: function () { reject(new Error('FUT.GG request timed out')); },
+        onerror: function () { reject(new Error('FUT.GG request failed')); }
+      });
+    });
+  }
+
+  async function futggCardPrice(definitionId) {
+    var id = Number(definitionId) || 0;
+    if (!id) return { ok: false, reason: 'no definition id' };
+
+    var protectedPath = '/api/fut/player-prices/27/' + id + '/';
+    var sign = await gmJsonRequest(
+      'POST',
+      'https://www.fut.gg/api/fut/price-access/sign/',
+      { url: protectedPath }
+    );
+
+    if (sign.status === 429) return { ok: false, reason: 'rate limited' };
+    if (sign.status !== 200 || !sign.json) return { ok: false, reason: 'HTTP ' + sign.status };
+
+    var signData = sign.json.data || {};
+    if (signData.challengeRequired) {
+      // Do not attempt to work around a challenge. EA-side validation remains the fallback.
+      return { ok: false, reason: 'challenge required' };
+    }
+
+    var signedUrl = signData.url;
+    if (!signedUrl) return { ok: false, reason: 'no signed URL' };
+    if (signedUrl.indexOf('http') !== 0) signedUrl = 'https://www.fut.gg' + signedUrl;
+
+    var detail = await gmJsonRequest('GET', signedUrl, null);
+    if (detail.status === 429) return { ok: false, reason: 'rate limited' };
+    if (detail.status !== 200 || !detail.json) return { ok: false, reason: 'HTTP ' + detail.status };
+
+    var data = detail.json.data || {};
+    var current = data.currentPrice;
+    if (current && typeof current === 'object') current = current.price;
+    current = Number(current) || 0;
+
+    var sales = Array.isArray(data.completedAuctions) ? data.completedAuctions : [];
+    var soldPrices = sales.slice(-30).map(function (a) {
+      return Number(a && (a.soldPrice || a.price)) || 0;
+    }).filter(Boolean);
+
+    return {
+      ok: true,
+      current: current,
+      salesMedian: medianNumber(soldPrices),
+      salesCount: soldPrices.length
+    };
+  }
+
+  function nextLegalEaPrice(price) {
+    var p = Math.max(150, Number(price) || 150);
+    return legalDown(p) + priceStep(p);
+  }
+
+  async function eaDirectMinBin(initialRows) {
+    var rows = initialRows || [];
+    var bins = rows.map(function (x) { return x.buyNow; }).filter(Boolean)
+      .sort(function (a, b) { return a - b; });
+    if (!bins.length) return { minBin: 0, probes: 0 };
+
+    var low = 150;
+    var high = bins[0];
+    var best = high;
+    var probes = 0;
+
+    while (low < high && probes < 9) {
+      var mid = legalDown(Math.floor((low + high) / 2));
+      if (mid < low) mid = low;
+      if (mid >= high) mid = legalDown(high - priceStep(high));
+      if (mid < low) break;
+
+      probes++;
+      log('EA probe ' + probes + ': ≤ ' + mid.toLocaleString());
+      await sleep(850);
+
+      var result = await eaDirectSearch(mid);
+      var found = result.map(function (x) { return x.buyNow; }).filter(function (x) { return x > 0 && x <= mid; })
+        .sort(function (a, b) { return a - b; });
+
+      if (found.length) {
+        best = Math.min(best, found[0]);
+        high = Math.min(mid, found[0]);
+      } else {
+        low = nextLegalEaPrice(mid);
+        if (low > high) low = high;
+      }
+    }
+
+    await sleep(850);
+    var finalRows = await eaDirectSearch(high);
+    var finalBins = finalRows.map(function (x) { return x.buyNow; }).filter(function (x) { return x > 0; })
+      .sort(function (a, b) { return a - b; });
+    if (finalBins.length) best = Math.min(best, finalBins[0]);
+
+    return { minBin: best, probes: probes + 1 };
+  }
+
+  async function smartPriceScan() {
+    if (state.running) {
+      log('Stop AUTO before Smart Price scan');
+      return;
+    }
+    if (state.smartScanning || state.fastScanning || state.scanningAll) return;
+    if (pageType() !== 'results') {
+      log('Open Search Results first');
+      return;
+    }
+
+    state.smartScanning = true;
+    var smartBtn = document.querySelector('#fcp-smartprice');
+    var fastBtn = document.querySelector('#fcp-fastbin');
+    var fullBtn = document.querySelector('#fcp-scanall');
+
+    [smartBtn, fastBtn, fullBtn].forEach(function (b) { if (b) b.disabled = true; });
+    if (smartBtn) smartBtn.textContent = 'SMART SCAN…';
+
+    try {
+      log('Smart Price: reading EA market directly');
+      var rows = await eaDirectSearch(0);
+      if (!rows.length) throw new Error('EA returned no market listings');
+
+      var bins = rows.map(function (x) { return x.buyNow; }).filter(Boolean)
+        .sort(function (a, b) { return a - b; });
+      var bids = rows.map(function (x) { return x.currentBid || x.startPrice; }).filter(Boolean)
+        .sort(function (a, b) { return a - b; });
+      var marketAverages = rows.map(function (x) { return x.marketAverage; }).filter(Boolean);
+      var definitionId = rows.map(function (x) { return x.definitionId; }).filter(Boolean)[0] || 0;
+      var pageStable = stableBIN(bins);
+      var eaAverage = medianNumber(marketAverages);
+
+      var futPromise = definitionId
+        ? futggCardPrice(definitionId).catch(function (e) { return { ok: false, reason: e.message || String(e) }; })
+        : Promise.resolve({ ok: false, reason: 'definition id unavailable' });
+
+      var direct = await eaDirectMinBin(rows);
+      var fut = await futPromise;
+
+      var referenceCandidates = [];
+      if (fut.ok && fut.salesMedian) referenceCandidates.push(fut.salesMedian);
+      if (fut.ok && fut.current) referenceCandidates.push(fut.current);
+      if (eaAverage) referenceCandidates.push(eaAverage);
+      if (pageStable) referenceCandidates.push(pageStable);
+
+      var reference = medianNumber(referenceCandidates);
+      if (!reference) reference = direct.minBin || pageStable || 0;
+      if (direct.minBin && reference < direct.minBin) reference = direct.minBin;
+
+      var futReference = fut.ok ? (fut.salesMedian || fut.current || 0) : 0;
+      var confidence = 'MEDIUM';
+      if (futReference && direct.minBin) {
+        var diff = Math.abs(futReference - direct.minBin) / Math.max(futReference, direct.minBin);
+        confidence = diff <= 0.15 ? 'HIGH' : (diff <= 0.30 ? 'MEDIUM' : 'LOW');
+      } else if (direct.minBin && eaAverage) {
+        confidence = 'HIGH';
+      }
+
+      state.market = {
+        absMinBIN: direct.minBin || bins[0] || 0,
+        stableBIN: reference,
+        minBid: bids[0] || 0,
+        listings: rows.length,
+        pages: 0,
+        probes: direct.probes || 0,
+        scannedAt: Date.now(),
+        fullScan: false,
+        fastScan: false,
+        smartScan: true,
+        definitionId: definitionId,
+        futggPrice: fut.ok ? (fut.current || 0) : 0,
+        futggSalesMedian: fut.ok ? (fut.salesMedian || 0) : 0,
+        futggStatus: fut.ok ? ('live · ' + (fut.salesCount || 0) + ' sales') : ('fallback · ' + (fut.reason || 'unavailable')),
+        priceSource: fut.ok ? 'EA + FUT.GG' : 'EA DIRECT',
+        confidence: confidence
+      };
+
+      renderMarket();
+      log(
+        'SMART PRICE · EA min ' + (state.market.absMinBIN ? state.market.absMinBIN.toLocaleString() : '—') +
+        ' · ref ' + (state.market.stableBIN ? state.market.stableBIN.toLocaleString() : '—') +
+        ' · ' + state.market.priceSource
+      );
+    } catch (e) {
+      log('Smart Price fallback → EA UI probe (' + (e && e.message ? e.message : String(e)) + ')');
+      state.smartScanning = false;
+      [smartBtn, fastBtn, fullBtn].forEach(function (b) { if (b) b.disabled = false; });
+      if (smartBtn) smartBtn.textContent = 'SMART PRICE';
+      await fastMinBinScan();
+      return;
+    } finally {
+      state.smartScanning = false;
+      [smartBtn, fastBtn, fullBtn].forEach(function (b) { if (b) b.disabled = false; });
+      if (smartBtn) smartBtn.textContent = 'SMART PRICE';
+      render();
+    }
   }
 
   function waitUntil(test, timeoutMs) {
@@ -431,6 +875,9 @@
           state.market.scannedAt = Date.now();
           state.market.fullScan = false;
           state.market.fastScan = true;
+          state.market.smartScan = false;
+          state.market.priceSource = 'EA UI PROBE';
+          state.market.confidence = 'MEDIUM';
           renderMarket();
 
           if (low >= high) break;
@@ -462,6 +909,9 @@
       state.market.scannedAt = Date.now();
       state.market.fullScan = false;
       state.market.fastScan = true;
+          state.market.smartScan = false;
+          state.market.priceSource = 'EA UI PROBE';
+          state.market.confidence = 'MEDIUM';
       renderMarket();
 
       log('FAST MIN BIN ' + bestFound.toLocaleString() + ' · ' + state.market.probes + ' probes');
@@ -671,6 +1121,9 @@
     var bid = document.querySelector('#fcp-bid');
     var max = document.querySelector('#fcp-maxbid');
     var scanInfo = document.querySelector('#fcp-scaninfo');
+    var futgg = document.querySelector('#fcp-futgg');
+    var source = document.querySelector('#fcp-source');
+    var confidence = document.querySelector('#fcp-confidence');
     if (minBin) minBin.textContent = state.market.absMinBIN ? state.market.absMinBIN.toLocaleString() : '—';
     if (stable) stable.textContent = state.market.stableBIN ? state.market.stableBIN.toLocaleString() : '—';
     if (bid) bid.textContent = state.market.minBid ? state.market.minBid.toLocaleString() : '—';
@@ -678,12 +1131,20 @@
       var m = maxBidFor(state.market.stableBIN);
       max.textContent = m ? m.toLocaleString() : '—';
     }
+    if (futgg) {
+      var fp = state.market.futggSalesMedian || state.market.futggPrice || 0;
+      futgg.textContent = fp ? fp.toLocaleString() : '—';
+    }
+    if (source) source.textContent = state.market.priceSource || 'PAGE';
+    if (confidence) confidence.textContent = state.market.confidence || '—';
     if (scanInfo) {
-      scanInfo.textContent = state.market.fastScan
-        ? ('Fast BIN · ' + state.market.probes + ' price probes')
-        : state.market.fullScan
-          ? ('Full market · ' + state.market.pages + ' pages · ' + state.market.listings + ' listings')
-          : (state.market.listings ? ('Current page · ' + state.market.listings + ' listings') : 'Not scanned');
+      scanInfo.textContent = state.market.smartScan
+        ? ('Smart · ' + state.market.probes + ' EA probes · FUT.GG ' + (state.market.futggStatus || 'not checked'))
+        : state.market.fastScan
+          ? ('EA UI probe · ' + state.market.probes + ' price probes')
+          : state.market.fullScan
+            ? ('Full market · ' + state.market.pages + ' pages · ' + state.market.listings + ' listings')
+            : (state.market.listings ? ('Current page · ' + state.market.listings + ' listings') : 'Not scanned');
     }
   }
 
@@ -1020,7 +1481,7 @@
     var root = document.createElement('section');
     root.id = APP_ID;
     root.innerHTML =
-      '<div class="fcp-head"><div><b>FC+ AUTO</b><small>v0.3.3 · fast BIN scan</small></div><button id="fcp-min" type="button">−</button></div>' +
+      '<div class="fcp-head"><div><b>FC+ AUTO</b><small>v0.3.4 · smart price engine</small></div><button id="fcp-min" type="button">−</button></div>' +
       '<div id="fcp-body">' +
         '<div class="fcp-top"><span id="fcp-state" data-on="0">STOPPED</span><span>Trades <b id="fcp-trades">0/' + state.maxTrades + '</b></span></div>' +
         '<div class="fcp-market">' +
@@ -1029,14 +1490,20 @@
           '<div><small>MIN BID</small><b id="fcp-bid">—</b></div>' +
           '<div><small>MAX BID</small><b id="fcp-maxbid">—</b></div>' +
         '</div>' +
+        '<div class="fcp-sourcebar">' +
+          '<span>FUT.GG <b id="fcp-futgg">—</b></span>' +
+          '<span>SOURCE <b id="fcp-source">PAGE</b></span>' +
+          '<span>CONF <b id="fcp-confidence">—</b></span>' +
+        '</div>' +
         '<div id="fcp-scaninfo" class="fcp-scaninfo">Not scanned</div>' +
+        '<button id="fcp-smartprice" class="fcp-smartprice" type="button">SMART PRICE</button>' +
         '<div class="fcp-fastrow">' +
-          '<button id="fcp-fastbin" type="button">FAST MIN BIN</button>' +
+          '<button id="fcp-fastbin" type="button">EA FAST BIN</button>' +
           '<button id="fcp-scanall" type="button">FULL PAGE SCAN</button>' +
         '</div>' +
         '<div class="fcp-scanrow">' +
           '<label>FULL SCAN PAGE CAP<input id="fcp-maxscanpages" type="number" inputmode="numeric" min="1" max="100" value="' + state.maxScanPages + '"></label>' +
-          '<span>Fast BIN uses price probing instead of scrolling every page.</span>' +
+          '<span>Smart Price: FUT.GG reference + direct EA validation. Falls back automatically.</span>' +
         '</div>' +
         '<div class="fcp-grid three">' +
           '<label>MIN PROFIT<input id="fcp-minprofit" type="number" inputmode="numeric" value="' + state.minProfit + '"></label>' +
@@ -1065,6 +1532,11 @@
 
     root.querySelector('#fcp-start').addEventListener('click', function () {
       if (state.running) stop('Stopped by user'); else start();
+    });
+
+    root.querySelector('#fcp-smartprice').addEventListener('click', function () {
+      readUI();
+      smartPriceScan();
     });
 
     root.querySelector('#fcp-fastbin').addEventListener('click', function () {
@@ -1109,7 +1581,12 @@
     '#' + APP_ID + ' .fcp-market>div{padding:8px;border-radius:9px;background:#ffffff08;min-width:0}' +
     '#' + APP_ID + ' .fcp-market small{display:block;color:#ffffff65;font-size:8px}' +
     '#' + APP_ID + ' .fcp-market b{display:block;margin-top:2px;font-size:13px;overflow:hidden;text-overflow:ellipsis}' +
+    '#' + APP_ID + ' .fcp-sourcebar{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:7px}' +
+    '#' + APP_ID + ' .fcp-sourcebar span{padding:6px;border-radius:7px;background:#ffffff07;color:#ffffff65;font-size:8px;min-width:0}' +
+    '#' + APP_ID + ' .fcp-sourcebar b{display:block;margin-top:2px;color:#fff;font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
     '#' + APP_ID + ' .fcp-scaninfo{padding:6px 8px;border-radius:8px;background:#ffffff07;color:#ffffff72;font-size:9px}' +
+    '#' + APP_ID + ' .fcp-smartprice{width:100%;height:39px;margin-top:7px;border:0;border-radius:9px;background:#00ef88;color:#03120b;font-size:11px;font-weight:950}' +
+    '#' + APP_ID + ' .fcp-smartprice:disabled{opacity:.55}' +
     '#' + APP_ID + ' .fcp-fastrow{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:7px}' +
     '#' + APP_ID + ' .fcp-fastrow button{height:37px;border:0;border-radius:8px;font-size:10px;font-weight:900}' +
     '#' + APP_ID + ' #fcp-fastbin{background:#00ef88;color:#03120b}' +
